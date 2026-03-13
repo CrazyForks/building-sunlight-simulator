@@ -119,13 +119,16 @@ function getLatitudeByCity(cityName) {
  * @returns {string} HTML字符串
  */
 function generateCityOptions(selectedCity = '') {
-    let html = '<option value="">-- 选择城市 --</option>';
-    
+    const placeholder = typeof i18n !== 'undefined' ? i18n.t('viewer.selectCityPlaceholder') : '-- 选择城市 --';
+    let html = `<option value="">${typeof Utils !== 'undefined' ? Utils.escapeHtml(placeholder) : placeholder}</option>`;
+
     for (const [groupKey, group] of Object.entries(CITY_DATA)) {
-        html += `<optgroup label="${group.label}">`;
+        const groupLabel = typeof Utils !== 'undefined' ? Utils.escapeHtml(group.label) : group.label;
+        html += `<optgroup label="${groupLabel}">`;
         for (const city of group.cities) {
             const selected = city.name === selectedCity ? 'selected' : '';
-            html += `<option value="${city.name}" data-lat="${city.lat}" ${selected}>${city.name} (${city.lat}°)</option>`;
+            const safeName = typeof Utils !== 'undefined' ? Utils.escapeHtml(city.name) : city.name;
+            html += `<option value="${safeName}" data-lat="${city.lat}" ${selected}>${safeName} (${city.lat}°)</option>`;
         }
         html += '</optgroup>';
     }

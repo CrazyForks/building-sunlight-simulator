@@ -184,6 +184,9 @@
             };
             image.src = event.target.result;
         };
+        reader.onerror = () => {
+            alert(i18n.t('viewer.errorFileRead'));
+        };
         reader.readAsDataURL(file);
     });
 
@@ -313,6 +316,108 @@
 
     canvas.addEventListener('contextmenu', e => e.preventDefault());
 
+    // ========== 触摸事件支持 ==========
+    let touchStartTime = 0;
+    let lastTouchDist = 0;
+
+    function getTouchCanvasCoords(touch) {
+        const rect = wrapper.getBoundingClientRect();
+        return {
+            x: (touch.clientX - rect.left - viewX) / viewScale,
+            y: (touch.clientY - rect.top - viewY) / viewScale
+        };
+    }
+
+    wrapper.addEventListener('touchstart', (e) => {
+        if (!isImageLoaded) return;
+        e.preventDefault();
+
+        if (e.touches.length === 2) {
+            // 双指缩放
+            const dx = e.touches[0].clientX - e.touches[1].clientX;
+            const dy = e.touches[0].clientY - e.touches[1].clientY;
+            lastTouchDist = Math.hypot(dx, dy);
+            return;
+        }
+
+        if (e.touches.length === 1) {
+            touchStartTime = Date.now();
+            const touch = e.touches[0];
+
+            if (mode === 'idle') {
+                isDragging = true;
+                lastMouseX = touch.clientX;
+                lastMouseY = touch.clientY;
+                wrapper.classList.add('grabbing');
+            } else if (mode === 'scaling') {
+                const p = getTouchCanvasCoords(touch);
+                scalePoints.push(p);
+                if (scalePoints.length === 2) {
+                    mode = 'idle';
+                    updateCursor();
+                    document.getElementById('scaleInputArea').style.display = 'block';
+                }
+                draw();
+            } else if (mode === 'drawing') {
+                const p = getTouchCanvasCoords(touch);
+                currentPoly.push(p);
+                draw();
+            }
+        }
+    }, { passive: false });
+
+    wrapper.addEventListener('touchmove', (e) => {
+        if (!isImageLoaded) return;
+        e.preventDefault();
+
+        if (e.touches.length === 2 && lastTouchDist > 0) {
+            const dx = e.touches[0].clientX - e.touches[1].clientX;
+            const dy = e.touches[0].clientY - e.touches[1].clientY;
+            const dist = Math.hypot(dx, dy);
+            const scale = dist / lastTouchDist;
+            const midX = (e.touches[0].clientX + e.touches[1].clientX) / 2;
+            const midY = (e.touches[0].clientY + e.touches[1].clientY) / 2;
+            const rect = wrapper.getBoundingClientRect();
+            const mx = midX - rect.left;
+            const my = midY - rect.top;
+            const newScale = Math.min(Math.max(viewScale * scale, 0.1), 10);
+            const ox = mx - viewX;
+            const oy = my - viewY;
+            viewX = mx - ox * (newScale / viewScale);
+            viewY = my - oy * (newScale / viewScale);
+            viewScale = newScale;
+            lastTouchDist = dist;
+            updateTransform();
+            return;
+        }
+
+        if (e.touches.length === 1) {
+            const touch = e.touches[0];
+            if (isDragging) {
+                viewX += touch.clientX - lastMouseX;
+                viewY += touch.clientY - lastMouseY;
+                lastMouseX = touch.clientX;
+                lastMouseY = touch.clientY;
+                updateTransform();
+            } else if (mode === 'drawing') {
+                mousePos = getTouchCanvasCoords(touch);
+                draw();
+            }
+        }
+    }, { passive: false });
+
+    wrapper.addEventListener('touchend', (e) => {
+        if (!isImageLoaded) return;
+
+        if (e.touches.length === 0) {
+            lastTouchDist = 0;
+            if (isDragging) {
+                isDragging = false;
+                wrapper.classList.remove('grabbing');
+            }
+        }
+    });
+
     // ========== 绘图函数 ==========
     function draw() {
         ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -422,8 +527,8 @@
         const validation = CONFIG.VALIDATION;
         
         const b = {
-            id: Date.now() + Math.random(),
-            name: `${idx}号楼`,
+            id: Date.now().toString(36) + Math.random().toString(36).slice(2),
+            name: i18n.t('viewer.defaultBuildingName').replace('{0}', idx),
             floors: useDefaults ? clampInt(parseInt(defFloorsEl.value), validation.FLOORS.MIN, validation.FLOORS.MAX, CONFIG.DEFAULTS.FLOORS) : CONFIG.DEFAULTS.FLOORS,
             floorHeight: useDefaults ? clampFloat(parseFloat(defFloorHeightEl.value), validation.FLOOR_HEIGHT.MIN, validation.FLOOR_HEIGHT.MAX, CONFIG.DEFAULTS.FLOOR_HEIGHT) : CONFIG.DEFAULTS.FLOOR_HEIGHT,
             units: useDefaults ? clampInt(parseInt(defUnitsEl.value), validation.UNITS.MIN, validation.UNITS.MAX, CONFIG.DEFAULTS.UNITS_PER_FLOOR) : CONFIG.DEFAULTS.UNITS_PER_FLOOR,
@@ -502,7 +607,7 @@
             inpName.value = b.name;
             inpName.placeholder = i18n.t('editor.namePlaceholder');
             inpName.addEventListener('input', () => {
-                b.name = inpName.value || `${i + 1}号楼`;
+                b.name = inpName.value || i18n.t('viewer.defaultBuildingName').replace('{0}', i + 1);
                 draw();
             });
             tdName.appendChild(inpName);
@@ -650,13 +755,7 @@
             })
         };
 
-        const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(exportData, null, 2));
-        const downloadAnchorNode = document.createElement('a');
-        downloadAnchorNode.setAttribute("href", dataStr);
-        downloadAnchorNode.setAttribute("download", "buildings_config.json");
-        document.body.appendChild(downloadAnchorNode);
-        downloadAnchorNode.click();
-        downloadAnchorNode.remove();
+        Utils.downloadFile(JSON.stringify(exportData, null, 2), 'buildings_config.json', 'application/json');
     });
 
     // ========== 默认参数输入校验 ==========

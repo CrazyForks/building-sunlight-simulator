@@ -479,11 +479,13 @@
             return null;
         }
 
-        let declination = parseFloat(document.getElementById('seasonSelect').value);
-        
-        // 如果选择了自定义日期，使用计算出的赤纬角
-        if (declination === 'custom' || isNaN(declination)) {
+        const seasonValue = document.getElementById('seasonSelect').value;
+        let declination;
+        if (seasonValue === 'custom') {
             declination = customDeclination || 0;
+        } else {
+            declination = parseFloat(seasonValue);
+            if (isNaN(declination)) declination = 0;
         }
         
         const timeStep = CONFIG.SUNLIGHT_ANALYSIS.TIME_INTERVAL; // 固定6分钟间隔
@@ -709,30 +711,6 @@
         }
     }
 
-    /**
-     * 显示日照统计结果
-     */
-    function showSunlightStats(results) {
-        const statsDiv = document.getElementById('sunlightStats');
-        if (!statsDiv || !results) return;
-
-        const seasonName = {
-            '-23.44': '冬至',
-            '0': '春/秋分',
-            '23.44': '夏至'
-        }[results.declination.toString()] || '自定义';
-
-        let html = `
-            <div class="stat-row">
-                <span class="stat-label">分析日期</span>
-                <span class="stat-value">${seasonName}</span>
-            </div>
-        `;
-
-        statsDiv.innerHTML = html;
-        statsDiv.style.display = 'block';
-    }
-
     // ========== 城市/纬度选择器初始化 ==========
     function initLocationSelector() {
         const citySelect = document.getElementById('citySelect');
@@ -782,14 +760,6 @@
         updateLatDisplay();
     }
 
-    function updateLatDisplay() {
-        const latDisplay = document.getElementById('latDisplay');
-        if (latDisplay) {
-            const hemisphere = LATITUDE >= 0 ? '北纬' : '南纬';
-            latDisplay.textContent = `当前: ${hemisphere} ${Math.abs(LATITUDE).toFixed(2)}°`;
-        }
-    }
-
     function clearSunlightResults() {
         sunlightResults = null;
         clearGroup(heatmapGroup);
@@ -836,16 +806,25 @@
                 console.error(err);
             }
         };
+        reader.onerror = () => {
+            alert(i18n.t('viewer.errorFileRead'));
+        };
         reader.readAsText(file);
     });
+
+    function disposeMaterial(m) {
+        if (!m) return;
+        if (m.map) m.map.dispose();
+        if (m.dispose) m.dispose();
+    }
 
     function clearGroup(group) {
         for (let i = group.children.length - 1; i >= 0; i--) {
             const obj = group.children[i];
             if (obj.geometry) obj.geometry.dispose();
             if (obj.material) {
-                if (Array.isArray(obj.material)) obj.material.forEach(m => m && m.dispose && m.dispose());
-                else obj.material.dispose && obj.material.dispose();
+                if (Array.isArray(obj.material)) obj.material.forEach(disposeMaterial);
+                else disposeMaterial(obj.material);
             }
             group.remove(obj);
         }
@@ -1035,13 +1014,15 @@
 
     function updateSun() {
         const hour = getCurrentHour();
-        let decl = parseFloat(document.getElementById('seasonSelect').value);
-        
-        // 如果选择了自定义日期，使用计算出的赤纬角
-        if (decl === 'custom' || isNaN(decl)) {
+        const seasonValue = document.getElementById('seasonSelect').value;
+        let decl;
+        if (seasonValue === 'custom') {
             decl = customDeclination || 0;
+        } else {
+            decl = parseFloat(seasonValue);
+            if (isNaN(decl)) decl = 0;
         }
-        
+
         setTimeText(hour);
 
         const rad = Math.PI / 180;
@@ -1132,58 +1113,6 @@
         }
     }
 
-    /**
-     * 更新信息面板文字
-     */
-    function showUnitInfo(data) {
-        const panel = document.getElementById('unitInfoPanel');
-        const content = document.getElementById('unitInfoContent');
-        const title = document.getElementById('unitInfoTitle');
-
-        title.textContent = `${data.buildingName}`;
-
-        const hours = data.sunlightHours;
-        const maxHours = CONFIG.SUNLIGHT_ANALYSIS.MAX_HOURS; // 使用配置的8小时
-        const percent = Math.min(hours / maxHours * 100, 100);
-        const color = getSunlightColor(hours, maxHours);
-        const colorHex = '#' + color.getHexString();
-
-        let statusText = '良好';
-        let statusClass = 'good';
-        if (hours < 2) {
-            statusText = '不达标';
-            statusClass = 'bad';
-        } else if (hours < 3) {
-            statusText = '偏少';
-            statusClass = 'warning';
-        }
-
-        content.innerHTML = `
-            <div class="info-row">
-                <span class="info-label">楼层</span>
-                <span class="info-value">${data.floor} 层</span>
-            </div>
-            <div class="info-row">
-                <span class="info-label">户号</span>
-                <span class="info-value">第 ${data.unit} 户(从东向西)</span>
-            </div>
-            <div class="info-row">
-                <span class="info-label">日照时长</span>
-                <span class="info-value" style="color: ${colorHex}">${hours.toFixed(1)} 小时</span>
-            </div>
-            <div class="info-row">
-                <span class="info-label">日照状态</span>
-                <span class="info-value ${statusClass}">${statusText}</span>
-            </div>
-            <div class="sunlight-bar">
-                <div class="sunlight-fill" style="width: ${percent}%; background: ${colorHex};"></div>
-                <span class="sunlight-text">${hours.toFixed(1)}h</span>
-            </div>
-        `;
-
-        panel.style.display = 'block';
-    }
-
     // ========== UI 绑定 ==========
     function bindUI() {
         // 语言切换
@@ -1254,11 +1183,11 @@
                 sunlightResults = await calculateSunlightDuration((p) => {
                     const pct = Math.round(p * 100);
                     progressFill.style.width = pct + '%';
-                    progressText.textContent = `计算中... ${pct}%`;
+                    progressText.textContent = i18n.t('viewer.calculatingProgress').replace('{0}', pct);
                 });
 
                 if (sunlightResults) {
-                    progressText.textContent = '计算完成！';
+                    progressText.textContent = i18n.t('viewer.calculationComplete');
                     document.getElementById('toggleHeatmap').disabled = false;
                     document.getElementById('heatmapLegend').style.display = 'block';
                     showSunlightStats(sunlightResults);
@@ -1288,9 +1217,16 @@
             document.getElementById('unitInfoPanel').style.display = 'none';
         });
 
-        // 点击画布（支持触摸和鼠标事件）
-        renderer.domElement.addEventListener('click', onCanvasClick);
-        renderer.domElement.addEventListener('touchend', onCanvasClick);
+        // 点击画布（支持触摸和鼠标事件，防止双触发）
+        let touchHandled = false;
+        renderer.domElement.addEventListener('touchend', (e) => {
+            touchHandled = true;
+            onCanvasClick(e);
+            setTimeout(() => { touchHandled = false; }, 400);
+        });
+        renderer.domElement.addEventListener('click', (e) => {
+            if (!touchHandled) onCanvasClick(e);
+        });
 
         // 侧边栏收起/展开
         const controlsPanel = document.getElementById('controls');
@@ -1318,12 +1254,6 @@
                 sidebarToggle.setAttribute('aria-label', i18n.t('common.close'));
             }
         });
-
-        document.getElementById('canvas-container').addEventListener('click', (e) => {
-            if (window.innerWidth <= 600 && e.target === renderer.domElement) {
-                // 只在点击空白处时收起
-            }
-        });
     }
 
     // ========== 动画循环 ==========
@@ -1334,11 +1264,12 @@
     }
 
     // ========== 窗口大小调整 ==========
+    const debouncedFitView = Utils.debounce(() => fitViewToBuildings(), 150);
     window.addEventListener('resize', () => {
         camera.aspect = window.innerWidth / window.innerHeight;
         camera.updateProjectionMatrix();
         renderer.setSize(window.innerWidth, window.innerHeight);
-        fitViewToBuildings();
+        debouncedFitView();
     });
 
     // ========== 初始化 ==========
@@ -1453,11 +1384,12 @@
         const panel = document.getElementById('unitInfoPanel');
         const content = document.getElementById('unitInfoContent');
         const title = document.getElementById('unitInfoTitle');
+        const esc = Utils.escapeHtml;
 
         title.textContent = `${data.buildingName}`;
 
         const hours = data.sunlightHours;
-        const maxHours = CONFIG.SUNLIGHT_ANALYSIS.MAX_HOURS; // 使用配置的8小时
+        const maxHours = CONFIG.SUNLIGHT_ANALYSIS.MAX_HOURS;
         const percent = Math.min(hours / maxHours * 100, 100);
         const color = getSunlightColor(hours, maxHours);
         const colorHex = '#' + color.getHexString();
@@ -1474,20 +1406,20 @@
 
         content.innerHTML = `
             <div class="info-row">
-                <span class="info-label">${i18n.t('viewer.floor')}</span>
-                <span class="info-value">${data.floor} ${i18n.t('viewer.floorUnit')}</span>
+                <span class="info-label">${esc(i18n.t('viewer.floor'))}</span>
+                <span class="info-value">${esc(data.floor)} ${esc(i18n.t('viewer.floorUnit'))}</span>
             </div>
             <div class="info-row">
-                <span class="info-label">${i18n.t('viewer.unitNumber')}</span>
-                <span class="info-value">${i18n.t('viewer.unitFrom')} ${data.unit} ${i18n.t('viewer.unitTo')}</span>
+                <span class="info-label">${esc(i18n.t('viewer.unitNumber'))}</span>
+                <span class="info-value">${esc(i18n.t('viewer.unitFrom'))} ${esc(data.unit)} ${esc(i18n.t('viewer.unitTo'))}</span>
             </div>
             <div class="info-row">
-                <span class="info-label">${i18n.t('viewer.sunlightDuration')}</span>
-                <span class="info-value" style="color: ${colorHex}">${hours.toFixed(1)} ${i18n.t('viewer.sunlightHours')}</span>
+                <span class="info-label">${esc(i18n.t('viewer.sunlightDuration'))}</span>
+                <span class="info-value" style="color: ${colorHex}">${hours.toFixed(1)} ${esc(i18n.t('viewer.sunlightHours'))}</span>
             </div>
             <div class="info-row">
-                <span class="info-label">${i18n.t('viewer.sunlightStatus')}</span>
-                <span class="info-value ${statusClass}">${statusText}</span>
+                <span class="info-label">${esc(i18n.t('viewer.sunlightStatus'))}</span>
+                <span class="info-value ${statusClass}">${esc(statusText)}</span>
             </div>
             <div class="sunlight-bar">
                 <div class="sunlight-fill" style="width: ${percent}%; background: ${colorHex};"></div>
@@ -1536,8 +1468,8 @@
 
         let html = `
             <div class="stat-row">
-                <span class="stat-label">${i18n.t('viewer.analysisDate')}</span>
-                <span class="stat-value">${seasonName}</span>
+                <span class="stat-label">${Utils.escapeHtml(i18n.t('viewer.analysisDate'))}</span>
+                <span class="stat-value">${Utils.escapeHtml(seasonName)}</span>
             </div>
         `;
 

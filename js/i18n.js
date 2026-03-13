@@ -99,7 +99,18 @@ const i18n = (function() {
                 errorNoData: '请先导入建筑数据',
                 errorNoBuilding: '没有找到本小区的建筑（isThisCommunity: true）',
                 errorParseFailed: 'JSON 解析失败，请检查文件格式',
-                errorCalcFailed: '计算过程中出错，请重试'
+                errorCalcFailed: '计算过程中出错，请重试',
+                errorFileRead: '文件读取失败，请重试',
+
+                // 计算进度
+                calculatingProgress: '计算中... {0}%',
+                calculationComplete: '计算完成！',
+
+                // 城市选择器
+                selectCityPlaceholder: '-- 选择城市 --',
+
+                // 默认楼名
+                defaultBuildingName: '{0}号楼'
             },
 
             // 编辑器 (editor.html)
@@ -255,7 +266,18 @@ const i18n = (function() {
                 errorNoData: 'Please import building data first',
                 errorNoBuilding: 'No buildings found in this community (isThisCommunity: true)',
                 errorParseFailed: 'JSON parsing failed, please check file format',
-                errorCalcFailed: 'Error during calculation, please try again'
+                errorCalcFailed: 'Error during calculation, please try again',
+                errorFileRead: 'File read failed, please try again',
+
+                // Calculation progress
+                calculatingProgress: 'Calculating... {0}%',
+                calculationComplete: 'Calculation complete!',
+
+                // City selector
+                selectCityPlaceholder: '-- Select City --',
+
+                // Default building name
+                defaultBuildingName: 'Building {0}'
             },
 
             // Editor (editor.html)

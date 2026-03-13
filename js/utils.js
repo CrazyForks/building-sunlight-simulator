@@ -128,7 +128,7 @@ const Utils = (function() {
         if (obj instanceof Object) {
             const clonedObj = {};
             for (const key in obj) {
-                if (obj.hasOwnProperty(key)) {
+                if (Object.prototype.hasOwnProperty.call(obj, key)) {
                     clonedObj[key] = deepClone(obj[key]);
                 }
             }
@@ -332,6 +332,21 @@ const Utils = (function() {
         return dates[solarTerm] || dates.winter;
     }
 
+    /**
+     * HTML 转义，防止 XSS
+     * @param {string} str - 原始字符串
+     * @returns {string} 转义后的安全字符串
+     */
+    function escapeHtml(str) {
+        const s = String(str ?? '');
+        return s
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    }
+
     // 公开 API
     return {
         distance,
@@ -351,7 +366,8 @@ const Utils = (function() {
         getDayOfYear,
         calculateSolarDeclination,
         formatDate,
-        getSolarTermDate
+        getSolarTermDate,
+        escapeHtml
     };
 })();
 

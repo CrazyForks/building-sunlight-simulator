@@ -168,7 +168,7 @@ h3 {
     box-shadow: 0 0 5px rgba(0, 123, 255, 0.2);
 }
 
-label {
+#sidebar label {
     display: block;
     margin-bottom: 6px;
     font-weight: bold;
