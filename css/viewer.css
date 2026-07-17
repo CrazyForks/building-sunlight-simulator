@@ -266,6 +266,8 @@ h2 {
 .calc-progress {
     margin-top: 10px;
     text-align: center;
+    position: relative;
+    padding-right: 30px;
 }
 
 .progress-bar {
@@ -286,6 +288,26 @@ h2 {
 #progressText {
     font-size: 12px;
     color: #666;
+}
+
+.cancel-calc-btn {
+    position: absolute;
+    right: 0;
+    bottom: -4px;
+    width: 24px;
+    height: 24px;
+    padding: 0;
+    border: 1px solid #c7ccd1;
+    border-radius: 4px;
+    background: #fff;
+    color: #555;
+    font-size: 18px;
+    line-height: 20px;
+    cursor: pointer;
+}
+
+.cancel-calc-btn:hover {
+    background: #f1f3f5;
 }
 
 /* 热力图图例 */

@@ -41,7 +41,7 @@
 
 **Building Sunlight Simulator** is a web-based tool for architectural planning and sunlight simulation.
 
-It allows users to draw building outlines directly over a floor plan image (JPG/PNG) in the browser, instantly generating a 3D scene. By combining precise geographical coordinates with solar trajectory algorithms, it performs accurate sunlight and shadow analysis for target buildings. The project is purely frontend-based, has no backend dependencies, and supports offline usage.
+It lets users draw building outlines over a JPG/PNG plan, generate a 3D scene, and estimate sunlight occlusion using the project location and solar trajectory. The project is entirely frontend-based; all runtime dependencies ship in the repository, so it needs neither a backend nor a network connection.
 
 ---
 
@@ -51,17 +51,19 @@ It allows users to draw building outlines directly over a floor plan image (JPG/
 |--------|-------------|
 | **Deployment** | Pure static HTML/CSS/JS. Download and run, no environment installation required. |
 | **Editor** | Converts 2D plans to 3D models. Supports outline drawing, floor height settings, and scale calibration. |
-| **Calculation** | Uses spherical trigonometry for solar paths. Built-in latitude data for 50+ major cities. |
-| **Visuals** | High-precision 4096px shadow maps. Real-time adjustments for Winter/Summer Solstice, Equinoxes, and custom dates (06:00-18:00). Professional compass for orientation. |
-| **Quantification** | Calculates sunlight duration per household with heatmap visualization (light yellow to deep orange gradient). Interactive queries with industry-standard 8-hour maximum. |
+| **Calculation** | Uses spherical trigonometry for solar paths. Built-in coordinates and IANA time zones for 50+ major cities. |
+| **Visuals** | High-precision 4096px shadow maps. Hemisphere-aware solstice/equinox labels and custom dates with local-civil-time adjustment (06:00-18:00). Professional compass for orientation. |
+| **Quantification** | Estimates cumulative sunlight per apartment with a heatmap, apartment details, and a configurable reference duration. |
 | **Interaction** | Supports PC mouse and mobile touch controls. Features filtering for non-target buildings. |
 | **Multi-language** | Supports Chinese/English switching. Language toggle available in the top-right corner. |
 
 ### 📊 Quantified Sunlight Analysis
-* **Detection Point Generation**: For target buildings (`isThisCommunity: true`), detection points are generated on the south facade based on floor and unit counts. Points are located at the center of the south window (1.2m above floor level).
-* **Duration Calculation**: Performs raycasting from 06:00 to 18:00 at 6-minute intervals. If the ray towards the sun is unobstructed, the time is accumulated.
-* **Heatmap Visualization**: Displays color-coded tiles on south-facing windows upon calculation completion. Uses warm color scheme from light yellow (0h) to deep orange (8h+), following industry standards.
-* **Interaction**: Click on any unit's heatmap tile to view detailed information (floor, unit number, sunlight duration, status).
+* **Detection Point Generation**: For target buildings (`isThisCommunity: true`), every exterior-wall segment is mapped to an apartment along the configured split axis, with a detection point placed at window height on each floor. An apartment may span several facade segments; its reported duration is the maximum among those segments.
+* **Duration Calculation**: Performs midpoint raycasting over 6-minute intervals from 06:00 to 18:00 local civil time. Longitude, IANA time zone, and the equation of time convert civil time to apparent solar time before each direction is calculated.
+* **Heatmap Visualization**: Displays color-coded tiles on the sampled exterior-wall segments. It uses a warm color scheme from light yellow (0h) to deep orange (8h+).
+* **Interaction**: Click a heatmap tile to inspect its floor, unit number, cumulative sunlight, and reference status. The reference duration is configurable and defaults to 2 hours.
+
+> **Scope**: This is a planning visualization estimate based on cumulative 6-minute intervals and the maximum among an apartment's exterior-facade samples. It is not a universal regulatory compliance result. Formal assessment must apply local rules for dates, test points, and continuous-duration requirements.
 
 ### 🧭 Professional Compass
 * Professional 3D compass on the ground clearly marks cardinal directions (N/S/E/W), with north highlighted in red, replacing traditional simple arrows for better orientation guidance.
@@ -95,7 +97,7 @@ Open `editor.html` to convert your 2D floor plan into the JSON data required for
 
 1.  **Upload Map**: Upload a JPG/PNG image of the site plan or floor plan.
 2.  **Calibrate Scale**: Pick two points on the map with a known distance (e.g., a scale bar) and input the actual distance in meters.
-3.  **Draw Buildings**: Left-click to plot points; double-click to close the shape and generate the outline.
+3.  **Draw Buildings**: Left-click to plot points, then use Finish Outline or double-click to close the shape. Undo Point works with both mouse and touch input.
 4.  **Set Properties**: Select a building to set the number of floors, floor height, and geographical location.
 5.  **Export Config**: Click save to generate the configuration file (defaults to `data.json`).
 
@@ -117,9 +119,9 @@ Open `editor.html` to convert your 2D floor plan into the JSON data required for
 Open `index.html` for 3D visualization and analysis.
 
 1.  **Import Data**: Click the button to load the JSON file exported in Step 1 (or use `examples/sample.json` in the repo for testing).
-2.  **Adjust Environment**: Select a preset city or manually enter latitude; switch dates (Winter/Summer Solstice/Equinoxes/Custom Date).
+2.  **Adjust Environment**: Select a preset city or manually enter latitude, longitude, and an IANA time zone; switch dates (Winter/Summer Solstice/Spring Equinox/Autumn Equinox/Custom Date).
 3.  **Observe Shadows**: Drag the time slider to observe sunlight occlusion on the target floors throughout the day. Ground compass indicates orientation.
-4.  **Quantified Analysis**: Click "Calculate Sunlight Duration" to view the heatmap (light yellow to deep orange gradient) and specific unit data. Click heatmap tiles to view individual unit details.
+4.  **Quantified Analysis**: Set a reference duration, then click "Calculate Sunlight Duration" to view the heatmap and apartment data. Click heatmap tiles to inspect individual units.
 
 ---
 
@@ -134,6 +136,8 @@ The project uses JSON to transfer building data. `examples/sample.json` provides
 {
   "version": 1.7,                  // Data version
   "latitude": 36.65,               // Latitude (Effects solar elevation)
+  "longitude": 117.12,             // Longitude, east is positive
+  "timeZone": "Asia/Shanghai",   // IANA time zone for civil-time conversion
   "scaleRatio": 0.483,             // Scale: 1 pixel = N meters
   "origin": { "x": 306, "y": 336 },// Coordinate system origin (pixels)
   "buildings": [
@@ -141,7 +145,7 @@ The project uses JSON to transfer building data. `examples/sample.json` provides
       "name": "Building 1",
       "floors": 18,                // Number of floors
       "floorHeight": 3,            // Height per floor (meters)
-      "totalHeight": 54,           // Total height (Optional, auto-calculated)
+      "totalHeight": 54,           // Optional; if supplied, must equal floors * floorHeight
       "isThisCommunity": true,     // Is target community (For highlighting/filtering)
       "shape": [                   // Vertex coordinates (Meters relative to origin)
         { "x": -19.18, "y": -107.28 },
@@ -162,6 +166,7 @@ The project uses JSON to transfer building data. `examples/sample.json` provides
 
 * **Engine**: Three.js (WebGL)
 * **Shadows**: PCFSoftShadowMap
+* **Offline Analysis**: Self-contained Web Worker with a triangle BVH; pinned Three.js r128 and OrbitControls assets live in `vendor/three-r128/`
 * **Solar Algorithm**:
     * Solar Elevation: $\sin(h) = \sin(\phi)\sin(\delta) + \cos(\phi)\cos(\delta)\cos(\omega)$
     * Solar Azimuth: $\cos(A) = (\sin(h)\sin(\phi) - \sin(\delta)) / (\cos(h)\cos(\phi))$
@@ -177,8 +182,11 @@ building-sunlight-simulator/
 │   ├── i18n.js            # Internationalization
 │   ├── cities.js          # City data
 │   ├── editor.js          # Editor logic
+│   ├── sunlight-worker.js # Offline ray-analysis Worker
 │   └── viewer.js          # Viewer logic
 ├── examples/              # Sample data
+├── tests/                 # Unit and browser regression tests
+├── vendor/three-r128/     # Three.js, OrbitControls, and third-party license
 ├── editor.html            # Editor page
 └── index.html             # Viewer page
 ```
@@ -196,6 +204,8 @@ Issues and Pull Requests are welcome!
 ## 📄 License
 
 [MIT License](LICENSE) © 2026 SeanWong17
+
+The vendored Three.js and OrbitControls files are distributed under their MIT License; see [`vendor/three-r128/LICENSE`](vendor/three-r128/LICENSE).
 
 ---
 

@@ -59,6 +59,16 @@
                             <input type="number" id="latitudeInput" value="36.65" step="0.01" min="-90" max="90">
                         </div>
                     </div>
+                    <div class="location-row">
+                        <div class="field">
+                            <span data-i18n="viewer.inputLongitude">手动输入经度</span>
+                            <input type="number" id="longitudeInput" value="117.12" step="0.01" min="-180" max="180">
+                        </div>
+                        <div class="field">
+                            <span data-i18n="viewer.inputTimeZone">IANA 时区</span>
+                            <input type="text" id="timeZoneInput" value="Asia/Shanghai" autocomplete="off" spellcheck="false">
+                        </div>
+                    </div>
                     <div class="lat-display" id="latDisplay">当前: 北纬 36.65°</div>
                     <div class="lat-display" id="northAngleDisplay">北向角: 0°</div>
                     <div class="field" style="margin-top:10px;">
@@ -72,9 +82,10 @@
             <div class="control-group">
                 <label for="seasonSelect" data-i18n="viewer.step3">3. 选择日期</label>
                 <select id="seasonSelect">
-                    <option value="-23.44" selected data-i18n="viewer.winterSolstice">冬至</option>
-                    <option value="0" data-i18n="viewer.springAutumn">春/秋分</option>
-                    <option value="23.44" data-i18n="viewer.summerSolstice">夏至</option>
+                    <option value="december-solstice" selected>冬至</option>
+                    <option value="march-equinox">春分</option>
+                    <option value="june-solstice">夏至</option>
+                    <option value="september-equinox">秋分</option>
                     <option value="custom" data-i18n="viewer.customDate">自定义日期</option>
                 </select>
                 <div id="customDatePicker" style="display:none; margin-top:8px;">
@@ -91,7 +102,7 @@
             </div>
 
             <div class="control-group" id="timeBlock">
-                <label for="timeSlider" data-i18n="viewer.timeLabel">时间 (06:00 - 18:00)</label>
+                <label for="timeSlider" data-i18n="viewer.timeLabel">当地民用时间 (06:00 - 18:00)</label>
                 <input type="range" id="timeSlider" min="6" max="18" step="0.05" value="10">
                 <div class="time-display" id="timeText">10:00</div>
             </div>
@@ -100,10 +111,15 @@
             <div class="control-group sunlight-analysis">
                 <label data-i18n="viewer.step4">4. 日照分析</label>
                 <div class="analysis-config">
+                    <div class="field analysis-reference-field">
+                        <span data-i18n="viewer.referenceHours">参考时长（小时）</span>
+                        <input type="number" id="referenceHoursInput" value="2" min="0.1" max="12" step="0.1">
+                    </div>
                     <button id="calcSunlightBtn" class="calc-btn" data-i18n="viewer.calcButton">🔬 计算日照时长</button>
                     <div id="calcProgress" class="calc-progress" style="display:none;">
                         <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
                         <span id="progressText" data-i18n="viewer.calculating">计算中...</span>
+                        <button id="cancelSunlightBtn" type="button" class="cancel-calc-btn" title="取消计算" aria-label="取消计算">×</button>
                     </div>
                     <div class="inline-row" style="margin-top: 10px;">
                         <input type="checkbox" id="toggleHeatmap" disabled>
@@ -144,13 +160,14 @@
 
     <div id="canvas-container" aria-label="3D canvas"></div>
 
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+    <script src="vendor/three-r128/three.min.js"></script>
+    <script src="vendor/three-r128/OrbitControls.js"></script>
     <script src="examples/sample_data.js" onerror="console.log('未找到默认示例数据，请手动上传')"></script>
     <script src="js/config.js"></script>
     <script src="js/utils.js"></script>
     <script src="js/cities.js"></script>
     <script src="js/i18n.js"></script>
+    <script src="js/sunlight-worker.js"></script>
     <script src="js/viewer.js"></script>
 </body>
 </html>

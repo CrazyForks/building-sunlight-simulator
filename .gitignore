@@ -32,6 +32,7 @@ dist/
 build/
 *.min.js
 *.min.css
+!vendor/three-r128/three.min.js
 
 # Temporary Files
 *.tmp

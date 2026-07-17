@@ -53,6 +53,8 @@ const i18n = (function() {
                 step2: '2. 项目位置',
                 selectCity: '选择城市',
                 inputLatitude: '手动输入纬度',
+                inputLongitude: '手动输入经度',
+                inputTimeZone: 'IANA 时区',
                 northAngle: '北向角(度)',
                 northAngleLabel: '北向角',
                 northAngleHint: '相对图纸向上，顺时针为正；修改后会重新校正模型与日照。',
@@ -62,7 +64,8 @@ const i18n = (function() {
                 
                 step3: '3. 选择日期',
                 winterSolstice: '冬至',
-                springAutumn: '春/秋分',
+                springEquinox: '春分',
+                autumnEquinox: '秋分',
                 summerSolstice: '夏至',
                 customDate: '自定义日期',
                 selectDate: '选择日期',
@@ -70,13 +73,14 @@ const i18n = (function() {
                 displayRange: '显示范围',
                 ownOnly: '只显示本小区',
                 
-                timeLabel: '时间 (06:00 - 18:00)',
+                timeLabel: '当地民用时间 (06:00 - 18:00)',
                 
                 // 日照分析
                 step4: '4. 日照分析',
                 calcButton: '🔬 计算日照时长',
                 calculating: '计算中...',
                 showHeatmap: '显示日照热力图',
+                referenceHours: '参考时长（小时）',
                 
                 // 热力图图例
                 legendHours: ['0h', '4h', '8h'],
@@ -87,17 +91,17 @@ const i18n = (function() {
                 // 统计信息
                 analysisDate: '分析日期',
                 statsScope: '统计口径',
-                statsScopeUnitMax: '按户统计，取同一户各受光片段中的最大日照时长',
+                statsScopeUnitMax: '累计离散受光时段；按户取同一户各外墙采样片段中的最大值',
                 statsTotalUnits: '总户数',
                 statsAverageHours: '平均日照',
                 statsMinHours: '最低日照',
                 statsMaxHours: '最高日照',
-                statsBelowStandard: '不达标户数',
+                statsBelowReference: '低于参考值户数',
                 statsCurrentFocus: '当前焦点',
                 statsCurrentUnit: '当前户',
                 statsCurrentBuilding: '所属楼栋',
                 statsBuildingAverage: '楼栋平均',
-                statsBuildingBelowStandard: '楼栋不达标',
+                statsBuildingBelowReference: '楼栋低于参考值',
                 statsNoSelection: '悬停或点击热力图可查看当前户和楼栋统计',
                 statsStatusLabel: '状态',
                 
@@ -110,21 +114,26 @@ const i18n = (function() {
                 unitTo: '户(从东向西)',
                 sunlightDuration: '日照时长',
                 sunlightHours: '小时',
-                sunlightStatus: '日照状态',
-                statusGood: '良好',
-                statusWarning: '偏少',
-                statusBad: '不达标',
+                sunlightStatus: '参考值状态',
+                statusReachedReference: '达到参考值',
+                statusBelowReference: '低于参考值',
+                analysisDisclaimer: '本结果用于方案可视化估算，不代表任何地区的法规合规结论；检测日期、检测点及连续时长要求请按当地规则复核。',
                 
                 // 错误提示
                 errorNoData: '请先导入建筑数据',
                 errorNoBuilding: '没有找到本小区的建筑（isThisCommunity: true）',
                 errorParseFailed: 'JSON 解析失败，请检查文件格式',
+                errorInvalidData: '建筑数据无效：\n{0}',
+                errorInvalidLocation: '经纬度或 IANA 时区无效',
+                errorTooComplex: '模型过于复杂，采样点或计算步数超过安全上限',
                 errorCalcFailed: '计算过程中出错，请重试',
                 errorFileRead: '文件读取失败，请重试',
 
                 // 计算进度
                 calculatingProgress: '计算中... {0}%',
                 calculationComplete: '计算完成！',
+                calculationCancelled: '计算已取消',
+                cancelCalculation: '取消计算',
 
                 // 城市选择器
                 selectCityPlaceholder: '-- 选择城市 --',
@@ -159,6 +168,8 @@ const i18n = (function() {
                 step3Operation: '操作: 左键加点，左键双击结束；右键撤销上个点。',
                 modeIdle: '当前: ✋ 浏览模式',
                 modeDrawing: '当前: ✏️ 正在绘制 (双击结束 / 右键撤销)',
+                undoPoint: '↶ 撤销点',
+                finishPolygon: '✓ 完成轮廓',
                 resetView: '⟲ 重置视角',
                 
                 // 步骤4
@@ -166,6 +177,8 @@ const i18n = (function() {
                 projectLocation: '📍 项目位置（用于日照计算）',
                 selectCity: '选择城市',
                 orInputLat: '或输入纬度',
+                orInputLon: '或输入经度',
+                timeZone: 'IANA 时区',
                 northAngle: '北向角(度)',
                 northAngleHint: '相对图纸向上，顺时针为正；0° 表示上北下南。',
                 defaultParams: '新楼栋默认参数:',
@@ -213,6 +226,8 @@ const i18n = (function() {
                 alertNoData: '没有数据可导出',
                 alertInvalidDistance: '请输入正确的实际距离，并确保两点不重合。',
                 alertConfirmDelete: '确定删除该楼栋吗？',
+                alertConfirmReplaceImage: '加载新底图会清除当前楼栋、比例尺和未完成轮廓，是否继续？',
+                alertInvalidLocation: '请输入有效的经度、纬度和 IANA 时区。',
                 
                 // 缩放信息
                 zoomInfo: '缩放'
@@ -256,6 +271,8 @@ const i18n = (function() {
                 step2: '2. Project Location',
                 selectCity: 'Select City',
                 inputLatitude: 'Manual Input Latitude',
+                inputLongitude: 'Manual Input Longitude',
+                inputTimeZone: 'IANA Time Zone',
                 northAngle: 'North Angle (deg)',
                 northAngleLabel: 'North Angle',
                 northAngleHint: 'Relative to plan up, clockwise is positive. Changes will realign geometry and sunlight.',
@@ -265,7 +282,8 @@ const i18n = (function() {
                 
                 step3: '3. Select Date',
                 winterSolstice: 'Winter Solstice',
-                springAutumn: 'Spring/Autumn Equinox',
+                springEquinox: 'Spring Equinox',
+                autumnEquinox: 'Autumn Equinox',
                 summerSolstice: 'Summer Solstice',
                 customDate: 'Custom Date',
                 selectDate: 'Select Date',
@@ -273,13 +291,14 @@ const i18n = (function() {
                 displayRange: 'Display Range',
                 ownOnly: 'Show Only This Community',
                 
-                timeLabel: 'Time (06:00 - 18:00)',
+                timeLabel: 'Local Civil Time (06:00 - 18:00)',
                 
                 // Sunlight analysis
                 step4: '4. Sunlight Analysis',
                 calcButton: '🔬 Calculate Sunlight Duration',
                 calculating: 'Calculating...',
                 showHeatmap: 'Show Sunlight Heatmap',
+                referenceHours: 'Reference Duration (hours)',
                 
                 // Heatmap legend
                 legendHours: ['0h', '4h', '8h'],
@@ -290,17 +309,17 @@ const i18n = (function() {
                 // Statistics
                 analysisDate: 'Analysis Date',
                 statsScope: 'Statistic Scope',
-                statsScopeUnitMax: 'Apartment-level metric using the maximum sunlight duration among all lit facade pieces of the same apartment',
+                statsScopeUnitMax: 'Cumulative discrete exposure; each apartment uses the maximum among its exterior-facade sample segments',
                 statsTotalUnits: 'Total Apartments',
                 statsAverageHours: 'Average Sunlight',
                 statsMinHours: 'Minimum Sunlight',
                 statsMaxHours: 'Maximum Sunlight',
-                statsBelowStandard: 'Below-Standard Apartments',
+                statsBelowReference: 'Apartments Below Reference',
                 statsCurrentFocus: 'Current Focus',
                 statsCurrentUnit: 'Current Apartment',
                 statsCurrentBuilding: 'Building',
                 statsBuildingAverage: 'Building Average',
-                statsBuildingBelowStandard: 'Building Below Standard',
+                statsBuildingBelowReference: 'Building Below Reference',
                 statsNoSelection: 'Hover or click a heatmap cell to inspect the focused apartment and building summary',
                 statsStatusLabel: 'Status',
                 
@@ -313,21 +332,26 @@ const i18n = (function() {
                 unitTo: '(West to East)',
                 sunlightDuration: 'Sunlight Duration',
                 sunlightHours: 'hours',
-                sunlightStatus: 'Sunlight Status',
-                statusGood: 'Good',
-                statusWarning: 'Fair',
-                statusBad: 'Below Standard',
+                sunlightStatus: 'Reference Status',
+                statusReachedReference: 'Meets Reference',
+                statusBelowReference: 'Below Reference',
+                analysisDisclaimer: 'This is a planning visualization estimate, not a regulatory compliance conclusion. Verify local rules for dates, test points, and continuous-duration requirements.',
                 
                 // Error messages
                 errorNoData: 'Please import building data first',
                 errorNoBuilding: 'No buildings found in this community (isThisCommunity: true)',
                 errorParseFailed: 'JSON parsing failed, please check file format',
+                errorInvalidData: 'Invalid building data:\n{0}',
+                errorInvalidLocation: 'Invalid coordinates or IANA time zone',
+                errorTooComplex: 'The model exceeds the safe sampling or calculation limit',
                 errorCalcFailed: 'Error during calculation, please try again',
                 errorFileRead: 'File read failed, please try again',
 
                 // Calculation progress
                 calculatingProgress: 'Calculating... {0}%',
                 calculationComplete: 'Calculation complete!',
+                calculationCancelled: 'Calculation cancelled',
+                cancelCalculation: 'Cancel calculation',
 
                 // City selector
                 selectCityPlaceholder: '-- Select City --',
@@ -362,6 +386,8 @@ const i18n = (function() {
                 step3Operation: 'Operation: Left click to add point, double-click to finish; right click to undo last point.',
                 modeIdle: 'Current: ✋ Browse Mode',
                 modeDrawing: 'Current: ✏️ Drawing (Double-click to finish / Right-click to undo)',
+                undoPoint: '↶ Undo Point',
+                finishPolygon: '✓ Finish Outline',
                 resetView: '⟲ Reset View',
                 
                 // Step 4
@@ -369,6 +395,8 @@ const i18n = (function() {
                 projectLocation: '📍 Project Location (for sunlight calculation)',
                 selectCity: 'Select City',
                 orInputLat: 'Or Input Latitude',
+                orInputLon: 'Or Input Longitude',
+                timeZone: 'IANA Time Zone',
                 northAngle: 'North Angle (deg)',
                 northAngleHint: 'Relative to plan up, clockwise is positive; 0° means north-up.',
                 defaultParams: 'Default Parameters for New Buildings:',
@@ -416,6 +444,8 @@ const i18n = (function() {
                 alertNoData: 'No data to export',
                 alertInvalidDistance: 'Please enter a valid actual distance and ensure the two points are not coincident.',
                 alertConfirmDelete: 'Are you sure you want to delete this building?',
+                alertConfirmReplaceImage: 'Loading a new plan will clear buildings, scale calibration, and the unfinished outline. Continue?',
+                alertInvalidLocation: 'Enter valid coordinates and an IANA time zone.',
                 
                 // Zoom info
                 zoomInfo: 'Zoom'

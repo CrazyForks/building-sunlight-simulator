@@ -1,5 +1,8 @@
 {
   "version": 1.5,
+  "latitude": 36.65,
+  "longitude": 117.12,
+  "timeZone": "Asia/Shanghai",
   "northAngle": 0,
   "scaleRatio": 0.4832847793689541,
   "origin": {

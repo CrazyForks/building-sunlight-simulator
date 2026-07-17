@@ -21,6 +21,8 @@ const CONFIG = (function() {
         // 默认值
         DEFAULTS: {
             LATITUDE: 36.65,           // 默认纬度（济南）
+            LONGITUDE: 117.12,         // 默认经度（济南，东经为正）
+            TIME_ZONE: 'Asia/Shanghai',// 默认 IANA 时区
             CITY: '济南',              // 默认城市
             NORTH_ANGLE: 0,            // 默认北向角（相对图纸向上，顺时针为正）
             FLOORS: 18,                // 默认层数
@@ -59,8 +61,13 @@ const CONFIG = (function() {
             TIME_INTERVAL: 0.1,        // 固定6分钟间隔
             WINDOW_HEIGHT_OFFSET: 1.2, // 窗户高度偏移（米）
             FLOOR_HEIGHT_RATIO: 0.4,   // 楼层高度比例
-            MAX_HOURS: 8,              // 热力图最大显示时长（小时）- 行业标准
-            STANDARD_HOURS: 2          // 日照标准时长（小时）
+            MAX_HOURS: 8,              // 热力图色阶显示上限（小时）
+            REFERENCE_HOURS: 2,        // 可视化参考时长默认值（不代表法规标准）
+            MAX_SAMPLE_POINTS: 20000,  // 单次分析最大立面采样点数
+            MAX_RAY_STEPS: 2400000,    // 单次分析最大 点×时刻 数
+            MAX_OCCLUSION_WORK: 50000000, // 最大 射线×等效简单楼栋 数
+            REFERENCE_TRIANGLES_PER_MESH: 12, // 一个等效简单楼栋的三角形数
+            MAIN_THREAD_BATCH_SIZE: 240// Worker 不可用时每批计算步数
         },
 
         // 3D 场景配置
@@ -113,10 +120,14 @@ const CONFIG = (function() {
         // 验证范围
         VALIDATION: {
             LATITUDE: { MIN: -90, MAX: 90 },
+            LONGITUDE: { MIN: -180, MAX: 180 },
             NORTH_ANGLE: { MIN: -180, MAX: 180 },
             FLOORS: { MIN: 1, MAX: 300 },
             FLOOR_HEIGHT: { MIN: 1, MAX: 20 },
-            UNITS: { MIN: 1, MAX: 50 }
+            UNITS: { MIN: 1, MAX: 50 },
+            BUILDINGS: { MIN: 1, MAX: 500 },
+            POLYGON_POINTS: { MIN: 3, MAX: 200 },
+            MIN_POLYGON_AREA: 0.0001
         },
 
         // 本地存储键名

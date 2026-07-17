@@ -304,6 +304,20 @@ button:disabled {
     flex: 1;
 }
 
+.draw-action-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 6px;
+}
+
+.draw-action-grid #btnDrawMode {
+    grid-column: 1 / -1;
+}
+
+.draw-action-grid button {
+    min-width: 0;
+}
+
 .location-config .field {
     display: flex;
     flex-direction: column;

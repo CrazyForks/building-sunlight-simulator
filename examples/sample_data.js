@@ -3,6 +3,8 @@
 const DEFAULT_DATA = {
   "version": 1.6,
   "latitude": 36.65, // 示例：济南纬度
+  "longitude": 117.12,
+  "timeZone": "Asia/Shanghai",
   "northAngle": 0,
   "scaleRatio": 0.4832847793689541,
   "origin": {

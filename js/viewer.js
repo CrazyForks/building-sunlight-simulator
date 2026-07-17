@@ -17,11 +17,25 @@
     renderer.setSize(window.innerWidth, window.innerHeight);
     renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    renderer.shadowMap.autoUpdate = false;
     document.getElementById('canvas-container').appendChild(renderer.domElement);
-
     const controls = new THREE.OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
     controls.maxPolarAngle = Math.PI / 2 - 0.1;
+
+    let renderFrameRequested = false;
+    function requestRender(updateShadows = false) {
+        if (updateShadows) renderer.shadowMap.needsUpdate = true;
+        if (renderFrameRequested) return;
+        renderFrameRequested = true;
+        requestAnimationFrame(() => {
+            renderFrameRequested = false;
+            const controlsChanged = controls.update();
+            renderer.render(scene, camera);
+            if (controlsChanged) requestRender();
+        });
+    }
+    controls.addEventListener('change', () => requestRender());
 
     // 地面
     const planeGeometry = new THREE.PlaneGeometry(4000, 4000);
@@ -170,8 +184,6 @@
     scene.add(heatmapGroup);
 
     const HEATMAP_BASE_OPACITY = 0.85;
-    const HEATMAP_HOVER_OPACITY = 0.98;
-    const HEATMAP_SELECTED_OPACITY = 1.0;
     const HEATMAP_HOVER_LIGHTEN = 0.18;
     const HEATMAP_SELECTED_LIGHTEN = 0.34;
     const HEATMAP_EDGE_LOCK_RATIO = 0.08;
@@ -180,58 +192,60 @@
     const HEATMAP_OCCLUSION_EPS = 0.8;
 
     // ========== 状态变量 ==========
-    let LATITUDE = 36.65;
+    let LATITUDE = CONFIG.DEFAULTS.LATITUDE;
+    let LONGITUDE = CONFIG.DEFAULTS.LONGITUDE;
+    let TIME_ZONE = CONFIG.DEFAULTS.TIME_ZONE;
     let NORTH_ANGLE = CONFIG.DEFAULTS.NORTH_ANGLE;
     let showOwnOnly = false;
     let rawData = null;
     let currentData = null;
     let sunlightResults = null; // 存储日照计算结果
     let showHeatmap = false;
-    let customDeclination = null; // 存储自定义日期的赤纬角
     let hoverOccluderMeshes = [];
     let heatmapCellsByApartmentKey = new Map();
+    let heatmapInstanceData = [];
+    let heatmapResultsSource = null;
     let hoveredApartmentKey = null;
     let selectedApartmentKey = null;
     let currentUnitInfoData = null;
+    let analysisVersion = 0;
+    let activeAnalysisTask = null;
 
-    function rotatePlanPoint(point, angleDeg) {
-        const rad = angleDeg * Math.PI / 180;
-        const cos = Math.cos(rad);
-        const sin = Math.sin(rad);
-
-        return {
-            x: point.x * cos - point.y * sin,
-            y: point.x * sin + point.y * cos
-        };
+    class AnalysisCancelledError extends Error {
+        constructor() {
+            super('Sunlight analysis cancelled');
+            this.name = 'AnalysisCancelledError';
+        }
     }
 
-    function transformProjectData(data, northAngle) {
-        if (!data) return null;
-
-        const normalizedAngle = Utils.normalizeAngle(parseFloat(northAngle));
-        const rotationAngle = -normalizedAngle;
-        const transformed = Utils.deepClone(data);
-        transformed.northAngle = normalizedAngle;
-
-        if (!Array.isArray(transformed.buildings)) {
-            return transformed;
+    class AnalysisComplexityError extends Error {
+        constructor() {
+            super('Sunlight analysis complexity limit exceeded');
+            this.name = 'AnalysisComplexityError';
         }
+    }
 
-        transformed.buildings = transformed.buildings.map(building => {
-            const nextBuilding = { ...building };
-
-            if (Array.isArray(building.shape)) {
-                nextBuilding.shape = building.shape.map(point => rotatePlanPoint(point, rotationAngle));
+    function cancelActiveAnalysis() {
+        analysisVersion++;
+        if (activeAnalysisTask) {
+            const task = activeAnalysisTask;
+            task.cancelled = true;
+            if (task.worker) {
+                task.worker.terminate();
+                task.worker = null;
             }
-
-            if (building.center && typeof building.center.x === 'number' && typeof building.center.y === 'number') {
-                nextBuilding.center = rotatePlanPoint(building.center, rotationAngle);
+            if (task.rejectWorker) {
+                const rejectWorker = task.rejectWorker;
+                task.rejectWorker = null;
+                rejectWorker(new AnalysisCancelledError());
             }
+        }
+    }
 
-            return nextBuilding;
-        });
-
-        return transformed;
+    function assertAnalysisActive(task) {
+        if (!task || task.cancelled || task.version !== analysisVersion || activeAnalysisTask !== task) {
+            throw new AnalysisCancelledError();
+        }
     }
 
     function formatAngleText(angle) {
@@ -240,21 +254,18 @@
 
     function rebuildProjectScene() {
         if (!rawData) return;
-        currentData = transformProjectData(rawData, NORTH_ANGLE);
+        currentData = Utils.transformProjectData(rawData, NORTH_ANGLE);
         loadBuildings(currentData);
     }
 
-    function syncLatitudeControls(latitude) {
-        if (typeof latitude !== 'number' || !isFinite(latitude)) return;
-
-        LATITUDE = latitude;
-        document.getElementById('latitudeInput').value = LATITUDE;
-        updateLatDisplay();
-
+    function syncCitySelection() {
         const citySelect = document.getElementById('citySelect');
         let matched = false;
         for (const option of citySelect.options) {
-            if (option.dataset.lat && Math.abs(parseFloat(option.dataset.lat) - LATITUDE) < 0.01) {
+            if (option.dataset.lat
+                && Math.abs(parseFloat(option.dataset.lat) - LATITUDE) < 0.01
+                && Math.abs(parseFloat(option.dataset.lon) - LONGITUDE) < 0.01
+                && option.dataset.timeZone === TIME_ZONE) {
                 citySelect.value = option.value;
                 matched = true;
                 break;
@@ -265,11 +276,24 @@
         }
     }
 
+    function syncLocationControls(location) {
+        if (Number.isFinite(location?.latitude)) LATITUDE = location.latitude;
+        if (Number.isFinite(location?.longitude)) LONGITUDE = location.longitude;
+        if (Utils.isValidTimeZone(location?.timeZone)) TIME_ZONE = location.timeZone;
+
+        document.getElementById('latitudeInput').value = LATITUDE;
+        document.getElementById('longitudeInput').value = LONGITUDE;
+        document.getElementById('timeZoneInput').value = TIME_ZONE;
+        syncCitySelection();
+        updateLatDisplay();
+        updateSeasonOptions();
+    }
+
     // ========== 纹理与材质工具 ==========
     function createFacadeTexture(floors, unitsPerFloor, unitRatiosPerFloor) {
-        const floorPx = 28;
-        const width = 512;
-        const height = Math.max(floors * floorPx, 4);
+        const maximumSize = Math.max(4, renderer.capabilities.maxTextureSize || 4096);
+        const width = Math.min(512, maximumSize);
+        const height = Math.min(maximumSize, Math.max(floors * 28, 4));
 
         const canvas = document.createElement('canvas');
         canvas.width = width;
@@ -283,8 +307,8 @@
         ctx.fillRect(0, 0, width, height);
 
         for (let f = 0; f < floors; f++) {
-            const y0 = Math.floor(f * floorPx);
-            const y1 = Math.floor((f + 1) * floorPx);
+            const y0 = Math.floor(f * height / floors);
+            const y1 = Math.floor((f + 1) * height / floors);
             const bandH = y1 - y0;
 
             const nUnits = Math.max(1, unitsPerFloor[f] || 1);
@@ -313,9 +337,17 @@
         const tex = new THREE.CanvasTexture(canvas);
         tex.wrapS = THREE.ClampToEdgeWrapping;
         tex.wrapT = THREE.ClampToEdgeWrapping;
-        tex.anisotropy = 8;
+        tex.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy?.() || 1);
         tex.needsUpdate = true;
         return tex;
+    }
+
+    function getFacadeTexture(cache, floors, unitsPerFloor, unitRatiosPerFloor) {
+        const key = JSON.stringify([floors, unitsPerFloor, unitRatiosPerFloor || null]);
+        if (!cache.has(key)) {
+            cache.set(key, createFacadeTexture(floors, unitsPerFloor, unitRatiosPerFloor));
+        }
+        return cache.get(key);
     }
 
     const roofMaterial = new THREE.MeshStandardMaterial({ 
@@ -354,7 +386,14 @@
         ctx.closePath();
         ctx.fill();
 
-        ctx.font = "bold 72px Arial, Helvetica, sans-serif";
+        const maxTextWidth = w - 28;
+        let fontSize = 72;
+        ctx.font = `bold ${fontSize}px Arial, Helvetica, sans-serif`;
+        const measuredWidth = ctx.measureText(t).width;
+        if (measuredWidth > maxTextWidth) {
+            fontSize = Math.max(12, Math.floor(fontSize * maxTextWidth / measuredWidth));
+            ctx.font = `bold ${fontSize}px Arial, Helvetica, sans-serif`;
+        }
         ctx.fillStyle = "#ffffff";
         ctx.textAlign = "center";
         ctx.textBaseline = "middle";
@@ -511,36 +550,6 @@
 
     // ========== 日照分析核心功能 ==========
 
-    /**
-     * 找到建筑物的南面（y值最大的边）
-     * 返回南面的两个端点，按从西到东排序
-     */
-    function findSouthFace(shape) {
-        if (shape.length < 3) return null;
-
-        // 找到所有边
-        const edges = [];
-        for (let i = 0; i < shape.length; i++) {
-            const p1 = shape[i];
-            const p2 = shape[(i + 1) % shape.length];
-            const midY = (p1.y + p2.y) / 2;
-            edges.push({ p1, p2, midY });
-        }
-
-        // 找到 y 值最大的边（最南）
-        edges.sort((a, b) => b.midY - a.midY);
-        const southEdge = edges[0];
-
-        // 确保从西到东排序（x 从小到大）
-        let start = southEdge.p1;
-        let end = southEdge.p2;
-        if (start.x > end.x) {
-            [start, end] = [end, start];
-        }
-
-        return { start, end };
-    }
-
     function getBuildingSplitAxis(building) {
         return axisFromAngleDeg(building?.unitSplitAngleDeg || 0);
     }
@@ -548,11 +557,11 @@
     /**
      * 计算所有外墙片段上的采光检测点
      */
-    function calculateSamplingPoints(building, buildingIndex) {
+    function calculateSamplingPoints(building, buildingIndex, maxPoints = Infinity) {
         const points = [];
         const floors = Math.max(1, parseInt(building.floors || 1, 10));
         const floorHeight = building.floorHeight || 3;
-        const units = Math.max(1, parseInt(building.units || 1, 10));
+        const unitsPerFloor = normalizeUnitsPerFloor(building);
         const axis = getBuildingSplitAxis(building);
 
         if (!Array.isArray(building.shape) || building.shape.length < 3) return points;
@@ -592,7 +601,11 @@
         if (!isFinite(spanProj) || segments.length === 0) return points;
 
         for (let floor = 0; floor < floors; floor++) {
-            const windowHeight = floor * floorHeight + floorHeight * 0.4 + 1.2;
+            const units = unitsPerFloor[floor];
+            const requestedWindowOffset = floorHeight * CONFIG.SUNLIGHT_ANALYSIS.FLOOR_HEIGHT_RATIO
+                + CONFIG.SUNLIGHT_ANALYSIS.WINDOW_HEIGHT_OFFSET;
+            const windowOffset = Math.min(floorHeight - 0.05, Math.max(0.05, requestedWindowOffset));
+            const windowHeight = floor * floorHeight + windowOffset;
             const ratios = getUnitRatiosForFloor(building.unitRatiosPerFloor, floor, floors, units);
             const boundaries = [maxProj + 1e-4];
 
@@ -648,6 +661,7 @@
                         ? { x: dx / segment.len, y: dy / segment.len }
                         : { x: 1, y: 0 };
 
+                    if (points.length >= maxPoints) throw new AnalysisComplexityError();
                     points.push({
                         buildingIndex,
                         buildingName: building.name || `建筑${buildingIndex + 1}`,
@@ -670,9 +684,10 @@
         return points;
     }
 
-    function calculateSunPosition(hour, latitude, declination) {
+    function calculateSunPosition(civilHour, latitude, declination, solarTimeOffset = 0) {
         const rad = Math.PI / 180;
-        const hAngle = (hour - 12) * 15 * rad;
+        const solarHour = civilHour + solarTimeOffset;
+        const hAngle = (solarHour - 12) * 15 * rad;
         const lat = latitude * rad;
         const dec = declination * rad;
 
@@ -681,7 +696,7 @@
 
         const cosAz = (sinAlt * Math.sin(lat) - Math.sin(dec)) / (Math.cos(alt) * Math.cos(lat));
         let az = Math.acos(Math.min(1, Math.max(-1, cosAz)));
-        if (hour >= 12) az = -az;
+        if (solarHour >= 12) az = -az;
 
         const y = Math.sin(alt);
         const r = Math.cos(alt);
@@ -697,8 +712,8 @@
     /**
      * 计算指向太阳的方向向量
      */
-    function calculateSunDirection(hour, latitude, declination) {
-        const position = calculateSunPosition(hour, latitude, declination);
+    function calculateSunDirection(hour, latitude, declination, solarTimeOffset = 0) {
+        const position = calculateSunPosition(hour, latitude, declination, solarTimeOffset);
         if (!position || position.altitude <= 0.01) return null; // 太阳在地平线以下或刚好在地平线
         return position.direction;
     }
@@ -746,22 +761,29 @@
 
     function isIntersectionNearCellEdge(intersection) {
         const obj = intersection?.object;
-        if (!obj || !obj.geometry || typeof obj.worldToLocal !== 'function' || !intersection.point) {
+        const instanceId = intersection?.instanceId;
+        const descriptor = Number.isInteger(instanceId) ? heatmapInstanceData[instanceId] : null;
+        if (!obj?.isInstancedMesh || !descriptor || !intersection.point) {
             return false;
         }
 
-        const widthParam = obj.geometry.parameters?.width;
-        if (!isFinite(widthParam) || widthParam <= 0) return false;
-
-        const localPoint = obj.worldToLocal(intersection.point.clone());
-        const halfWidth = widthParam * 0.5;
-        const edgeGap = halfWidth - Math.abs(localPoint.x);
+        const instanceMatrix = new THREE.Matrix4();
+        const worldMatrix = new THREE.Matrix4();
+        obj.getMatrixAt(instanceId, instanceMatrix);
+        worldMatrix.multiplyMatrices(obj.matrixWorld, instanceMatrix).invert();
+        const localPoint = intersection.point.clone().applyMatrix4(worldMatrix);
+        const width = descriptor.cellWidth;
+        const edgeGap = (0.5 - Math.abs(localPoint.x)) * width;
         const lockBand = Math.max(
             HEATMAP_EDGE_LOCK_MIN,
-            Math.min(HEATMAP_EDGE_LOCK_MAX, widthParam * HEATMAP_EDGE_LOCK_RATIO)
+            Math.min(HEATMAP_EDGE_LOCK_MAX, width * HEATMAP_EDGE_LOCK_RATIO)
         );
 
         return edgeGap >= -1e-4 && edgeGap <= lockBand;
+    }
+
+    function getHeatmapHitDescriptor(hit) {
+        return Number.isInteger(hit?.instanceId) ? heatmapInstanceData[hit.instanceId] || null : null;
     }
 
     function findRepresentativeCell(apartmentKey) {
@@ -771,18 +793,16 @@
 
     function findHitCellForApartment(heatHits, apartmentKey) {
         if (!Array.isArray(heatHits) || !apartmentKey) return null;
-        const hit = heatHits.find(item => item?.object?.userData?.apartmentKey === apartmentKey);
-        return hit?.object || null;
+        const hit = heatHits.find(item => getHeatmapHitDescriptor(item)?.userData?.apartmentKey === apartmentKey);
+        return getHeatmapHitDescriptor(hit);
     }
 
-    function applyHeatmapCellVisual(mesh, options = {}) {
-        const material = mesh?.material;
-        const baseColor = material?.userData?.baseColor;
-        if (!material || !baseColor) return;
+    function applyHeatmapCellVisual(cell, options = {}) {
+        if (!cell?.mesh || !cell.baseColor) return;
 
         const isSelected = !!options.selected;
         const isHovered = !!options.hovered;
-        const targetColor = baseColor.clone();
+        const targetColor = cell.baseColor.clone();
         const lighten = isSelected
             ? HEATMAP_SELECTED_LIGHTEN
             : (isHovered ? HEATMAP_HOVER_LIGHTEN : 0);
@@ -791,12 +811,8 @@
             targetColor.lerp(new THREE.Color(1, 1, 1), lighten);
         }
 
-        material.color.copy(targetColor);
-        material.opacity = isSelected
-            ? HEATMAP_SELECTED_OPACITY
-            : (isHovered ? HEATMAP_HOVER_OPACITY : (material.userData.baseOpacity ?? HEATMAP_BASE_OPACITY));
-        material.needsUpdate = true;
-        mesh.renderOrder = isSelected ? 4 : (isHovered ? 3 : 2);
+        cell.mesh.setColorAt(cell.instanceId, targetColor);
+        if (cell.mesh.instanceColor) cell.mesh.instanceColor.needsUpdate = true;
     }
 
     function updateApartmentHighlight(apartmentKey) {
@@ -806,7 +822,7 @@
 
         const isSelected = apartmentKey === selectedApartmentKey;
         const isHovered = apartmentKey === hoveredApartmentKey;
-        cells.forEach(mesh => applyHeatmapCellVisual(mesh, { selected: isSelected, hovered: isHovered }));
+        cells.forEach(cell => applyHeatmapCellVisual(cell, { selected: isSelected, hovered: isHovered }));
     }
 
     function refreshHeatmapHighlights(changedKeys = []) {
@@ -814,6 +830,7 @@
         if (selectedApartmentKey) keys.add(selectedApartmentKey);
         if (hoveredApartmentKey) keys.add(hoveredApartmentKey);
         keys.forEach(updateApartmentHighlight);
+        if (keys.size > 0) requestRender();
     }
 
     function setHoveredApartment(apartmentKey) {
@@ -865,7 +882,7 @@
         if (!Array.isArray(heatHits) || heatHits.length === 0) return null;
 
         const firstHit = heatHits[0];
-        const firstData = firstHit.object?.userData;
+        const firstData = getHeatmapHitDescriptor(firstHit)?.userData;
         const firstKey = firstData?.apartmentKey;
         if (!firstKey) return null;
 
@@ -897,19 +914,25 @@
 
         raycaster.set(origin, sunDirection);
         raycaster.near = 0.1;
-        raycaster.far = 2000;
+        raycaster.far = Infinity;
 
-        const occluders = buildingMeshes.filter(mesh => mesh?.userData?.buildingIndex !== point.buildingIndex);
-        const intersects = raycaster.intersectObjects(occluders, true);
+        // 起点已沿立面外法线偏移，near 只忽略起始面；同一楼栋的其他翼仍参与遮挡。
+        const intersects = raycaster.intersectObjects(buildingMeshes, false);
         return intersects.length === 0;
     }
 
-    function buildSunlightResultsFromPoints(allPoints, declination, latitude, timeStep) {
+    function buildSunlightResultsFromPoints(allPoints, snapshot) {
         const results = {
             points: allPoints,
-            declination,
-            latitude,
-            timeStep,
+            declination: snapshot.declination,
+            latitude: snapshot.latitude,
+            longitude: snapshot.longitude,
+            timeZone: snapshot.timeZone,
+            date: snapshot.date,
+            seasonPreset: snapshot.seasonPreset,
+            solarTimeOffset: snapshot.solarTimeOffset,
+            timeStep: snapshot.timeStep,
+            referenceHours: snapshot.referenceHours,
             buildings: {}
         };
 
@@ -917,7 +940,7 @@
         let totalUnits = 0;
         let globalMin = Infinity;
         let globalMax = 0;
-        const standardHours = CONFIG.SUNLIGHT_ANALYSIS.STANDARD_HOURS || 2;
+        const referenceHours = snapshot.referenceHours;
 
         allPoints.forEach(point => {
             const buildingKey = String(point.buildingIndex);
@@ -944,7 +967,7 @@
         for (const key of Object.keys(results.buildings)) {
             const buildingResult = results.buildings[key];
             let buildingSum = 0;
-            let buildingBelowStandard = 0;
+            let buildingBelowReference = 0;
 
             for (const unitPoints of buildingResult.unitsMap.values()) {
                 let unitMaxHours = 0;
@@ -963,13 +986,13 @@
                 buildingSum += unitMaxHours;
                 sumUnitHours += unitMaxHours;
                 totalUnits++;
-                if (unitMaxHours < standardHours) buildingBelowStandard++;
+                if (unitMaxHours < referenceHours) buildingBelowReference++;
                 globalMin = Math.min(globalMin, unitMaxHours);
                 globalMax = Math.max(globalMax, unitMaxHours);
             }
 
             buildingResult.avgHours = buildingResult.totalUnits > 0 ? (buildingSum / buildingResult.totalUnits) : 0;
-            buildingResult.belowStandard = buildingBelowStandard;
+            buildingResult.belowReference = buildingBelowReference;
             delete buildingResult.unitsMap;
         }
 
@@ -977,9 +1000,9 @@
         results.minHours = globalMin === Infinity ? 0 : globalMin;
         results.maxHours = globalMax;
         results.avgHours = totalUnits > 0 ? (sumUnitHours / totalUnits) : 0;
-        results.belowStandard = totalUnits === 0
+        results.belowReference = totalUnits === 0
             ? 0
-            : allPoints.filter(point => point.unitMaxHours < standardHours)
+            : allPoints.filter(point => point.unitMaxHours < referenceHours)
                 .reduce((set, point) => {
                     set.add(`${point.buildingIndex}-${point.floor}-${point.unit}`);
                     return set;
@@ -988,8 +1011,161 @@
         return results;
     }
 
+    function getAnalysisSolarSettings() {
+        const seasonPreset = document.getElementById('seasonSelect').value;
+        const date = seasonPreset === 'custom'
+            ? document.getElementById('customDateInput').value
+            : Utils.getSeasonPresetDate(seasonPreset);
+        const declination = Utils.calculateSolarDeclination(date);
+        const solarTimeOffset = Utils.calculateSolarTimeOffset(date, LONGITUDE, TIME_ZONE);
+        if (!date || !Number.isFinite(declination) || !Number.isFinite(solarTimeOffset)) {
+            const error = new Error('Invalid location or analysis date');
+            error.name = 'InvalidLocationError';
+            throw error;
+        }
+        return { date, declination, solarTimeOffset, seasonPreset };
+    }
+
+    function getReferenceHours() {
+        const input = document.getElementById('referenceHoursInput');
+        const fallback = CONFIG.SUNLIGHT_ANALYSIS.REFERENCE_HOURS || 2;
+        const value = Number(input?.value);
+        return Number.isFinite(value) ? Math.min(12, Math.max(0.1, value)) : fallback;
+    }
+
+    function serializeOccluderMeshes(buildingMeshes) {
+        buildingsGroup.updateMatrixWorld(true);
+        return buildingMeshes.map(mesh => {
+            const position = mesh.geometry?.getAttribute('position');
+            if (!position) return null;
+            const positions = new Float32Array(position.array);
+            const sourceIndex = mesh.geometry.getIndex();
+            const indices = sourceIndex ? new Uint32Array(sourceIndex.array) : null;
+            return {
+                positions,
+                indices,
+                matrixWorld: mesh.matrixWorld.elements.slice()
+            };
+        }).filter(Boolean);
+    }
+
+    function getMeshTriangleCount(mesh) {
+        const geometry = mesh?.geometry;
+        if (!geometry) return 0;
+        const index = geometry.getIndex();
+        if (index) return index.count / 3;
+        return (geometry.getAttribute('position')?.count || 0) / 3;
+    }
+
+    function buildWorkerPayload(allPoints, sunDirections, buildingMeshes, timeStep) {
+        const origins = new Float32Array(allPoints.length * 3);
+        const outwardNormals = new Float32Array(allPoints.length * 2);
+        allPoints.forEach((point, index) => {
+            origins[index * 3] = point.x;
+            origins[index * 3 + 1] = point.z;
+            origins[index * 3 + 2] = point.y;
+            outwardNormals[index * 2] = point.outward?.x || 0;
+            outwardNormals[index * 2 + 1] = point.outward?.y || 0;
+        });
+
+        const directions = new Float32Array(sunDirections.length * 3);
+        sunDirections.forEach((direction, index) => {
+            if (!direction) return;
+            directions[index * 3] = direction.x;
+            directions[index * 3 + 1] = direction.y;
+            directions[index * 3 + 2] = direction.z;
+        });
+
+        return {
+            origins,
+            outwardNormals,
+            directions,
+            meshes: serializeOccluderMeshes(buildingMeshes),
+            timeStep,
+            near: 0.1,
+            far: Infinity
+        };
+    }
+
+    function runWorkerAnalysis(task, payload, progressCallback) {
+        return new Promise((resolve, reject) => {
+            let worker;
+            try {
+                if (typeof createSunlightAnalysisWorker !== 'function') {
+                    throw new Error('Sunlight Worker factory is unavailable');
+                }
+                worker = createSunlightAnalysisWorker();
+            } catch (error) {
+                reject(error);
+                return;
+            }
+
+            task.worker = worker;
+            task.rejectWorker = reject;
+            const transfer = [payload.origins.buffer, payload.outwardNormals.buffer, payload.directions.buffer];
+            payload.meshes.forEach(mesh => {
+                transfer.push(mesh.positions.buffer);
+                if (mesh.indices) transfer.push(mesh.indices.buffer);
+            });
+
+            const cleanup = () => {
+                worker.terminate();
+                if (task.worker === worker) task.worker = null;
+                task.rejectWorker = null;
+            };
+
+            worker.onmessage = event => {
+                if (task.cancelled) return;
+                const message = event.data || {};
+                if (message.type === 'progress') {
+                    if (progressCallback) progressCallback(message.value);
+                    return;
+                }
+                if (message.type === 'complete') {
+                    cleanup();
+                    resolve(new Float32Array(message.hours));
+                    return;
+                }
+                if (message.type === 'error') {
+                    cleanup();
+                    reject(new Error(message.message || 'Worker analysis failed'));
+                }
+            };
+            worker.onerror = event => {
+                cleanup();
+                reject(new Error(event.message || 'Worker analysis failed'));
+            };
+            worker.postMessage({ type: 'start', payload }, transfer);
+        });
+    }
+
+    async function runMainThreadAnalysis(task, allPoints, sunDirections, buildingMeshes, timeStep, progressCallback) {
+        const raycaster = new THREE.Raycaster();
+        const totalSteps = allPoints.length * sunDirections.length;
+        const batchSize = CONFIG.SUNLIGHT_ANALYSIS.MAIN_THREAD_BATCH_SIZE || 240;
+        let completedSteps = 0;
+        let batchSteps = 0;
+
+        for (const point of allPoints) {
+            for (const sunDirection of sunDirections) {
+                assertAnalysisActive(task);
+                if (sunDirection && checkSunlight(point, sunDirection, buildingMeshes, raycaster)) {
+                    point.sunlightHours += timeStep;
+                }
+                completedSteps++;
+                batchSteps++;
+                if (batchSteps >= batchSize) {
+                    if (progressCallback) progressCallback(completedSteps / totalSteps);
+                    batchSteps = 0;
+                    await new Promise(resolve => setTimeout(resolve, 0));
+                }
+            }
+        }
+        if (progressCallback) progressCallback(1);
+    }
+
     /**
-     * 执行日照时长计算
+     * 使用不可变参数快照执行日照时长计算。
      */
     async function calculateSunlightDuration(progressCallback) {
         if (!currentData || !currentData.buildings) {
@@ -997,59 +1173,98 @@
             return null;
         }
 
-        const seasonValue = document.getElementById('seasonSelect').value;
-        let declination;
-        if (seasonValue === 'custom') {
-            declination = customDeclination || 0;
-        } else {
-            declination = parseFloat(seasonValue);
-            if (isNaN(declination)) declination = 0;
-        }
-        
-        const timeStep = CONFIG.SUNLIGHT_ANALYSIS.TIME_INTERVAL;
+        const task = { version: ++analysisVersion, cancelled: false, worker: null, rejectWorker: null };
+        activeAnalysisTask = task;
 
-        const allPoints = [];
-        currentData.buildings.forEach((building, idx) => {
-            if (building.isThisCommunity) {
-                allPoints.push(...calculateSamplingPoints(building, idx));
+        try {
+            const solarSettings = getAnalysisSolarSettings();
+            const analysisData = Utils.deepClone(currentData);
+            const snapshot = Object.freeze({
+                latitude: LATITUDE,
+                longitude: LONGITUDE,
+                timeZone: TIME_ZONE,
+                northAngle: NORTH_ANGLE,
+                date: solarSettings.date,
+                declination: solarSettings.declination,
+                solarTimeOffset: solarSettings.solarTimeOffset,
+                seasonPreset: solarSettings.seasonPreset,
+                timeStep: CONFIG.SUNLIGHT_ANALYSIS.TIME_INTERVAL,
+                referenceHours: getReferenceHours()
+            });
+            const timePoints = Utils.createTimeSamples(
+                CONFIG.TIME.MIN_HOUR,
+                CONFIG.TIME.MAX_HOUR,
+                snapshot.timeStep
+            );
+            const sunDirections = timePoints.map(hour => calculateSunDirection(
+                hour,
+                snapshot.latitude,
+                snapshot.declination,
+                snapshot.solarTimeOffset
+            ));
+
+            const allPoints = [];
+            const maxPoints = CONFIG.SUNLIGHT_ANALYSIS.MAX_SAMPLE_POINTS;
+            analysisData.buildings.forEach((building, index) => {
+                if (building.isThisCommunity === false) return;
+                const remaining = maxPoints - allPoints.length;
+                allPoints.push(...calculateSamplingPoints(building, index, remaining));
+            });
+
+            if (allPoints.length === 0) {
+                alert(i18n.t('viewer.errorNoBuilding'));
+                return null;
             }
-        });
+            const raySteps = allPoints.length * timePoints.length;
+            if (raySteps > CONFIG.SUNLIGHT_ANALYSIS.MAX_RAY_STEPS) {
+                throw new AnalysisComplexityError();
+            }
 
-        if (allPoints.length === 0) {
-            alert(i18n.t('viewer.errorNoBuilding'));
-            return null;
-        }
-
-        const buildingMeshes = collectBuildingMeshes();
-        const raycaster = new THREE.Raycaster();
-        const timePoints = [];
-
-        for (let hour = 6; hour <= 18; hour += timeStep) {
-            timePoints.push(hour);
-        }
-
-        const totalSteps = allPoints.length * timePoints.length;
-        let completedSteps = 0;
-
-        for (let pointIdx = 0; pointIdx < allPoints.length; pointIdx++) {
-            const point = allPoints[pointIdx];
-
-            for (const hour of timePoints) {
-                const sunDir = calculateSunDirection(hour, LATITUDE, declination);
-                if (sunDir && checkSunlight(point, sunDir, buildingMeshes, raycaster)) {
-                    point.sunlightHours += timeStep;
+            assertAnalysisActive(task);
+            const buildingMeshes = collectBuildingMeshes();
+            const triangleCounts = buildingMeshes.map(getMeshTriangleCount);
+            const occlusionWork = Utils.estimateOcclusionWork(
+                raySteps,
+                triangleCounts,
+                CONFIG.SUNLIGHT_ANALYSIS.REFERENCE_TRIANGLES_PER_MESH
+            );
+            if (occlusionWork > CONFIG.SUNLIGHT_ANALYSIS.MAX_OCCLUSION_WORK) {
+                throw new AnalysisComplexityError();
+            }
+            let completedInWorker = false;
+            if (typeof Worker !== 'undefined') {
+                try {
+                    const payload = buildWorkerPayload(allPoints, sunDirections, buildingMeshes, snapshot.timeStep);
+                    const hours = await runWorkerAnalysis(task, payload, progressCallback);
+                    assertAnalysisActive(task);
+                    hours.forEach((hoursValue, index) => {
+                        allPoints[index].sunlightHours = Utils.roundTo(hoursValue, 6);
+                    });
+                    completedInWorker = true;
+                } catch (error) {
+                    if (error?.name === 'AnalysisCancelledError' || task.cancelled) throw new AnalysisCancelledError();
+                    console.warn('Sunlight Worker unavailable, using main-thread fallback:', error);
                 }
-                completedSteps++;
             }
 
-            if (pointIdx % 10 === 0) {
-                const progress = completedSteps / totalSteps;
-                if (progressCallback) progressCallback(progress);
-                await new Promise(resolve => setTimeout(resolve, 0));
+            if (!completedInWorker) {
+                await runMainThreadAnalysis(
+                    task,
+                    allPoints,
+                    sunDirections,
+                    buildingMeshes,
+                    snapshot.timeStep,
+                    progressCallback
+                );
             }
+
+            assertAnalysisActive(task);
+            return buildSunlightResultsFromPoints(allPoints, snapshot);
+        } finally {
+            if (task.worker) task.worker.terminate();
+            task.rejectWorker = null;
+            if (activeAnalysisTask === task) activeAnalysisTask = null;
         }
-
-        return buildSunlightResultsFromPoints(allPoints, declination, LATITUDE, timeStep);
     }
 
     /**
@@ -1098,37 +1313,46 @@
     function createHeatmapLayer(results) {
         clearGroup(heatmapGroup);
         heatmapCellsByApartmentKey = new Map();
+        heatmapInstanceData = [];
+        heatmapResultsSource = results || null;
         hoveredApartmentKey = null;
         selectedApartmentKey = null;
         currentUnitInfoData = null;
         if (!results || !results.points) return;
 
-        const maxHours = CONFIG.SUNLIGHT_ANALYSIS.MAX_HOURS; // 使用配置的8小时
+        const points = results.points.filter(point => currentData.buildings[point.buildingIndex]);
+        if (points.length === 0) return;
+        const maxHours = CONFIG.SUNLIGHT_ANALYSIS.MAX_HOURS;
+        const geometry = new THREE.PlaneGeometry(1, 1);
+        const material = new THREE.MeshBasicMaterial({
+            color: 0xffffff,
+            side: THREE.DoubleSide,
+            transparent: true,
+            opacity: HEATMAP_BASE_OPACITY,
+            depthTest: true,
+            polygonOffset: true,
+            polygonOffsetFactor: -1,
+            polygonOffsetUnits: -1
+        });
+        const mesh = new THREE.InstancedMesh(geometry, material, points.length);
+        mesh.instanceMatrix.setUsage(THREE.StaticDrawUsage);
+        mesh.frustumCulled = false;
+        mesh.renderOrder = 2;
+        mesh.userData.type = 'heatmapLayer';
 
-        results.points.forEach(point => {
+        const position = new THREE.Vector3();
+        const quaternion = new THREE.Quaternion();
+        const scale = new THREE.Vector3();
+        const matrix = new THREE.Matrix4();
+        const rotationMatrix = new THREE.Matrix4();
+        const upAxis = new THREE.Vector3(0, 1, 0);
+
+        points.forEach((point, instanceId) => {
             const building = currentData.buildings[point.buildingIndex];
-            if (!building) return;
-
             const floorHeight = building.floorHeight || 3;
             const cellHeight = floorHeight * 0.9;
             const cellWidth = Math.max(0.06, Number(point.cellWidth) || 0.6);
-
-            const geometry = new THREE.PlaneGeometry(cellWidth, cellHeight);
             const color = getSunlightColor(point.sunlightHours, maxHours);
-            const material = new THREE.MeshBasicMaterial({
-                color: color,
-                side: THREE.DoubleSide,
-                transparent: true,
-                opacity: HEATMAP_BASE_OPACITY,
-                depthTest: true,
-                polygonOffset: true,
-                polygonOffsetFactor: -1,
-                polygonOffsetUnits: -1
-            });
-            material.userData.baseColor = color.clone();
-            material.userData.baseOpacity = HEATMAP_BASE_OPACITY;
-
-            const mesh = new THREE.Mesh(geometry, material);
             const wallHeight = (point.floor - 0.5) * floorHeight;
             const normalX = point.outward?.x || 0;
             const normalZ = point.outward?.y || 0;
@@ -1138,9 +1362,7 @@
             const tangentX = point.tangent?.x || 1;
             const tangentZ = point.tangent?.y || 0;
 
-            mesh.position.set(wallDataX + normalX * offset, wallHeight, wallDataY + normalZ * offset);
-
-            const upAxis = new THREE.Vector3(0, 1, 0);
+            position.set(wallDataX + normalX * offset, wallHeight, wallDataY + normalZ * offset);
             const outwardAxis = new THREE.Vector3(normalX, 0, normalZ);
 
             let xAxis;
@@ -1161,12 +1383,15 @@
             }
 
             const zAxis = new THREE.Vector3().crossVectors(xAxis, upAxis).normalize();
-            const rotationMatrix = new THREE.Matrix4().makeBasis(xAxis, upAxis, zAxis);
-            mesh.quaternion.setFromRotationMatrix(rotationMatrix);
-            mesh.renderOrder = 2;
+            rotationMatrix.makeBasis(xAxis, upAxis, zAxis);
+            quaternion.setFromRotationMatrix(rotationMatrix);
+            scale.set(cellWidth, cellHeight, 1);
+            matrix.compose(position, quaternion, scale);
+            mesh.setMatrixAt(instanceId, matrix);
+            mesh.setColorAt(instanceId, color);
 
             const apartmentKey = makeApartmentKey(point);
-            mesh.userData = {
+            const userData = {
                 type: 'heatmapCell',
                 apartmentKey,
                 buildingIndex: point.buildingIndex,
@@ -1176,13 +1401,18 @@
                 sunlightHours: point.sunlightHours,
                 unitMaxHours: point.unitMaxHours
             };
+            const descriptor = { mesh, instanceId, userData, baseColor: color.clone(), cellWidth };
+            heatmapInstanceData[instanceId] = descriptor;
 
-            heatmapGroup.add(mesh);
             if (!heatmapCellsByApartmentKey.has(apartmentKey)) {
                 heatmapCellsByApartmentKey.set(apartmentKey, []);
             }
-            heatmapCellsByApartmentKey.get(apartmentKey).push(mesh);
+            heatmapCellsByApartmentKey.get(apartmentKey).push(descriptor);
         });
+        mesh.instanceMatrix.needsUpdate = true;
+        if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+        heatmapGroup.add(mesh);
+        requestRender();
     }
 
     /**
@@ -1193,59 +1423,70 @@
         heatmapGroup.visible = show;
 
         if (show && sunlightResults) {
-            createHeatmapLayer(sunlightResults);
+            if (heatmapResultsSource !== sunlightResults || heatmapGroup.children.length === 0) {
+                createHeatmapLayer(sunlightResults);
+            }
             renderer.domElement.style.cursor = '';
         } else {
             clearHeatmapInteractionState();
         }
+        requestRender();
     }
 
-    // ========== 城市/纬度选择器初始化 ==========
+    // ========== 城市/位置选择器初始化 ==========
     function initLocationSelector() {
         const citySelect = document.getElementById('citySelect');
         const latInput = document.getElementById('latitudeInput');
+        const lonInput = document.getElementById('longitudeInput');
+        const timeZoneInput = document.getElementById('timeZoneInput');
         const northAngleInput = document.getElementById('northAngleInput');
         if (typeof generateCityOptions === 'function') {
-            citySelect.innerHTML = generateCityOptions('济南');
-            LATITUDE = getLatitudeByCity('济南') || 36.65;
+            citySelect.innerHTML = generateCityOptions(CONFIG.DEFAULTS.CITY);
+            const location = getLocationByCity(CONFIG.DEFAULTS.CITY);
+            LATITUDE = location?.lat ?? CONFIG.DEFAULTS.LATITUDE;
+            LONGITUDE = location?.lon ?? CONFIG.DEFAULTS.LONGITUDE;
+            TIME_ZONE = location?.timeZone ?? CONFIG.DEFAULTS.TIME_ZONE;
             latInput.value = LATITUDE;
+            lonInput.value = LONGITUDE;
+            timeZoneInput.value = TIME_ZONE;
         }
         northAngleInput.value = NORTH_ANGLE;
 
+        function applyLocation(latitude, longitude, timeZone) {
+            if (!Number.isFinite(latitude) || latitude < -90 || latitude > 90
+                || !Number.isFinite(longitude) || longitude < -180 || longitude > 180
+                || !Utils.isValidTimeZone(timeZone)) {
+                alert(i18n.t('viewer.errorInvalidLocation'));
+                syncLocationControls({ latitude: LATITUDE, longitude: LONGITUDE, timeZone: TIME_ZONE });
+                return;
+            }
+            LATITUDE = latitude;
+            LONGITUDE = longitude;
+            TIME_ZONE = timeZone;
+            clearSunlightResults();
+            syncLocationControls({ latitude, longitude, timeZone });
+            updateSun();
+        }
+
         citySelect.addEventListener('change', function() {
             const selectedOption = this.options[this.selectedIndex];
-            const lat = selectedOption.dataset.lat;
-            if (lat) {
-                LATITUDE = parseFloat(lat);
-                latInput.value = LATITUDE;
-                updateSun();
-                updateLatDisplay();
-                // 清除之前的计算结果
-                clearSunlightResults();
+            if (selectedOption.dataset.lat) {
+                applyLocation(
+                    parseFloat(selectedOption.dataset.lat),
+                    parseFloat(selectedOption.dataset.lon),
+                    selectedOption.dataset.timeZone
+                );
             }
         });
 
-        latInput.addEventListener('change', function() {
-            const inputLat = parseFloat(this.value);
-            if (!isNaN(inputLat) && inputLat >= -90 && inputLat <= 90) {
-                LATITUDE = inputLat;
-                updateSun();
-                updateLatDisplay();
-                clearSunlightResults();
-
-                let matched = false;
-                for (const option of citySelect.options) {
-                    if (option.dataset.lat && Math.abs(parseFloat(option.dataset.lat) - inputLat) < 0.01) {
-                        citySelect.value = option.value;
-                        matched = true;
-                        break;
-                    }
-                }
-                if (!matched) {
-                    citySelect.value = '';
-                }
-            }
-        });
+        const applyManualLocation = () => applyLocation(
+            parseFloat(latInput.value),
+            parseFloat(lonInput.value),
+            timeZoneInput.value.trim()
+        );
+        latInput.addEventListener('change', applyManualLocation);
+        lonInput.addEventListener('change', applyManualLocation);
+        timeZoneInput.addEventListener('change', applyManualLocation);
 
         northAngleInput.addEventListener('change', function() {
             NORTH_ANGLE = Utils.normalizeAngle(parseFloat(this.value));
@@ -1253,28 +1494,63 @@
             updateNorthAngleDisplay();
 
             if (rawData) {
-                rebuildProjectScene();
                 clearSunlightResults();
+                rebuildProjectScene();
             }
         });
 
-        updateLatDisplay();
+        syncLocationControls({ latitude: LATITUDE, longitude: LONGITUDE, timeZone: TIME_ZONE });
         updateNorthAngleDisplay();
     }
 
     function clearSunlightResults() {
+        cancelActiveAnalysis();
         sunlightResults = null;
         clearHeatmapInteractionState();
         clearGroup(heatmapGroup);
         heatmapCellsByApartmentKey = new Map();
+        heatmapInstanceData = [];
+        heatmapResultsSource = null;
         document.getElementById('toggleHeatmap').checked = false;
         document.getElementById('toggleHeatmap').disabled = true;
         document.getElementById('heatmapLegend').style.display = 'none';
         document.getElementById('sunlightStats').style.display = 'none';
+        document.getElementById('calcProgress').style.display = 'none';
+        requestRender();
     }
 
     // ========== 加载楼栋数据 ==========
     const jsonInput = document.getElementById('jsonInput');
+
+    function getBuildingSchemaOptions() {
+        return {
+            defaults: {
+                latitude: LATITUDE,
+                longitude: LONGITUDE,
+                timeZone: TIME_ZONE,
+                northAngle: NORTH_ANGLE,
+                scaleRatio: 1
+            },
+            limits: {
+                latitude: { min: CONFIG.VALIDATION.LATITUDE.MIN, max: CONFIG.VALIDATION.LATITUDE.MAX },
+                longitude: { min: CONFIG.VALIDATION.LONGITUDE.MIN, max: CONFIG.VALIDATION.LONGITUDE.MAX },
+                northAngle: { min: CONFIG.VALIDATION.NORTH_ANGLE.MIN, max: CONFIG.VALIDATION.NORTH_ANGLE.MAX },
+                floors: { min: CONFIG.VALIDATION.FLOORS.MIN, max: CONFIG.VALIDATION.FLOORS.MAX },
+                floorHeight: { min: CONFIG.VALIDATION.FLOOR_HEIGHT.MIN, max: CONFIG.VALIDATION.FLOOR_HEIGHT.MAX },
+                units: { min: CONFIG.VALIDATION.UNITS.MIN, max: CONFIG.VALIDATION.UNITS.MAX },
+                buildings: { min: CONFIG.VALIDATION.BUILDINGS.MIN, max: CONFIG.VALIDATION.BUILDINGS.MAX },
+                polygonPoints: {
+                    min: CONFIG.VALIDATION.POLYGON_POINTS.MIN,
+                    max: CONFIG.VALIDATION.POLYGON_POINTS.MAX
+                },
+                minPolygonArea: CONFIG.VALIDATION.MIN_POLYGON_AREA
+            }
+        };
+    }
+
+    function normalizeImportedData(data) {
+        return Utils.normalizeBuildingData(data, getBuildingSchemaOptions());
+    }
 
     jsonInput.addEventListener('change', (e) => {
         const file = e.target.files[0];
@@ -1282,15 +1558,23 @@
         const reader = new FileReader();
         reader.onload = (ev) => {
             try {
-                const data = JSON.parse(ev.target.result);
-                syncLatitudeControls(data.latitude);
-                updateSun();
-                rawData = data;
-                NORTH_ANGLE = Utils.normalizeAngle(parseFloat(data.northAngle));
+                const parsedData = JSON.parse(ev.target.result);
+                const normalized = normalizeImportedData(parsedData);
+                if (!normalized.valid) {
+                    alert(i18n.t('viewer.errorInvalidData').replace('{0}', normalized.errors.slice(0, 8).join('\n')));
+                    console.warn('Invalid building data:', normalized.errors);
+                    return;
+                }
+                if (normalized.warnings.length) console.warn('Building data normalized:', normalized.warnings);
+
+                clearSunlightResults();
+                rawData = normalized.data;
+                syncLocationControls(rawData);
+                NORTH_ANGLE = rawData.northAngle;
                 document.getElementById('northAngleInput').value = NORTH_ANGLE;
                 updateNorthAngleDisplay();
                 rebuildProjectScene();
-                clearSunlightResults();
+                updateSun();
                 document.getElementById('empty-state').style.display = 'none';
             } catch (err) {
                 alert(i18n.t('viewer.errorParseFailed'));
@@ -1303,28 +1587,43 @@
         reader.readAsText(file);
     });
 
-    function disposeMaterial(m) {
-        if (!m) return;
-        if (m.map) m.map.dispose();
-        if (m.dispose) m.dispose();
-    }
-
     function clearGroup(group) {
-        for (let i = group.children.length - 1; i >= 0; i--) {
-            const obj = group.children[i];
-            if (obj.geometry) obj.geometry.dispose();
-            if (obj.material) {
-                if (Array.isArray(obj.material)) obj.material.forEach(disposeMaterial);
-                else disposeMaterial(obj.material);
-            }
-            group.remove(obj);
-        }
+        const geometries = new Set();
+        const materials = new Set();
+        const textures = new Set();
+
+        group.traverse(object => {
+            if (object === group) return;
+            if (object.geometry) geometries.add(object.geometry);
+            const objectMaterials = Array.isArray(object.material) ? object.material : [object.material];
+            objectMaterials.filter(Boolean).forEach(material => {
+                if (material === roofMaterial) return;
+                materials.add(material);
+                Object.values(material).forEach(value => {
+                    if (value?.isTexture) textures.add(value);
+                });
+                Object.values(material.uniforms || {}).forEach(uniform => {
+                    if (uniform?.value?.isTexture) textures.add(uniform.value);
+                });
+            });
+        });
+
+        textures.forEach(texture => texture.dispose());
+        materials.forEach(material => material.dispose());
+        geometries.forEach(geometry => geometry.dispose());
+        group.clear();
     }
 
     function loadBuildings(data) {
         clearGroup(buildingsGroup);
 
-        if (!data || !Array.isArray(data.buildings) || data.buildings.length === 0) return;
+        if (!data || !Array.isArray(data.buildings) || data.buildings.length === 0) {
+            refreshHoverOccluderMeshes();
+            requestRender(true);
+            return;
+        }
+
+        const facadeTextureCache = new Map();
 
         data.buildings.forEach((b, index) => {
             if (!b.shape || b.shape.length < 3) return;
@@ -1337,7 +1636,7 @@
             shape.closePath();
 
             const floors = Math.max(1, parseInt(b.floors || 1, 10));
-            const totalHeight = typeof b.totalHeight === 'number' ? b.totalHeight : (floors * (b.floorHeight || 3));
+            const totalHeight = floors * (b.floorHeight || 3);
             const unitsPerFloor = normalizeUnitsPerFloor({ floors, units: b.units, unitsPerFloor: b.unitsPerFloor });
             const splitAxis = axisFromAngleDeg(b.unitSplitAngleDeg || 0);
 
@@ -1357,7 +1656,12 @@
 
             let mesh;
             if (own) {
-                const sideTexture = createFacadeTexture(floors, unitsPerFloor, b.unitRatiosPerFloor);
+                const sideTexture = getFacadeTexture(
+                    facadeTextureCache,
+                    floors,
+                    unitsPerFloor,
+                    b.unitRatiosPerFloor
+                );
                 const sideMaterial = new THREE.MeshStandardMaterial({
                     map: sideTexture,
                     color: CONFIG.MATERIALS.BUILDING_COLOR,
@@ -1402,6 +1706,7 @@
         refreshHoverOccluderMeshes();
         applyVisibilityFilter(false);
         fitViewToBuildings();
+        requestRender(true);
     }
 
     // ========== 视角与可见性 ==========
@@ -1442,6 +1747,7 @@
 
         scene.fog.near = Math.max(120, maxSize * 0.8);
         scene.fog.far = Math.max(900, maxSize * 6);
+        requestRender(true);
     }
 
     function applyVisibilityFilter(shouldFit = true) {
@@ -1452,13 +1758,18 @@
         });
         refreshHoverOccluderMeshes();
         if (shouldFit) fitViewToBuildings();
+        requestRender(true);
     }
 
     // ========== 光照 ==========
     const sunLight = new THREE.DirectionalLight(0xffffff, CONFIG.LIGHTING.SUN_INTENSITY);
     sunLight.castShadow = true;
-    sunLight.shadow.mapSize.width = CONFIG.LIGHTING.SHADOW_MAP_SIZE;
-    sunLight.shadow.mapSize.height = CONFIG.LIGHTING.SHADOW_MAP_SIZE;
+    const shadowMapSize = Math.min(
+        CONFIG.LIGHTING.SHADOW_MAP_SIZE,
+        renderer.capabilities.maxTextureSize || CONFIG.LIGHTING.SHADOW_MAP_SIZE
+    );
+    sunLight.shadow.mapSize.width = shadowMapSize;
+    sunLight.shadow.mapSize.height = shadowMapSize;
     sunLight.shadow.bias = CONFIG.LIGHTING.SHADOW_BIAS;
     const d = 500;
     sunLight.shadow.camera.left = -d;
@@ -1490,9 +1801,7 @@
     }
 
     function setTimeText(hour) {
-        const h = Math.floor(hour);
-        const m = Math.floor((hour - h) * 60);
-        const text = `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+        const text = Utils.formatTime(hour);
         const t1 = document.getElementById('timeText');
         const t2 = document.getElementById('timeTextDock');
         if (t1) t1.innerText = text;
@@ -1501,18 +1810,21 @@
 
     function updateSun() {
         const hour = getCurrentHour();
-        const seasonValue = document.getElementById('seasonSelect').value;
-        let decl;
-        if (seasonValue === 'custom') {
-            decl = customDeclination || 0;
-        } else {
-            decl = parseFloat(seasonValue);
-            if (isNaN(decl)) decl = 0;
+        let settings;
+        try {
+            settings = getAnalysisSolarSettings();
+        } catch (error) {
+            return;
         }
 
         setTimeText(hour);
 
-        const sunPosition = calculateSunPosition(hour, LATITUDE, decl);
+        const sunPosition = calculateSunPosition(
+            hour,
+            LATITUDE,
+            settings.declination,
+            settings.solarTimeOffset
+        );
         const alt = sunPosition.altitude;
         const direction = sunPosition.direction;
         const dist = 800;
@@ -1551,6 +1863,7 @@
             sunLight.intensity = 0.0;
             ambientLight.intensity = CONFIG.LIGHTING.MIN_AMBIENT_INTENSITY;
         }
+        requestRender(true);
     }
 
     // ========== 点击交互 ==========
@@ -1632,6 +1945,19 @@
     }
 
     // ========== UI 绑定 ==========
+    function updateSeasonOptions() {
+        const seasonSelect = document.getElementById('seasonSelect');
+        if (!seasonSelect) return;
+        Array.from(seasonSelect.options).forEach(option => {
+            if (option.value === 'custom') {
+                option.textContent = i18n.t('viewer.customDate');
+                return;
+            }
+            const key = Utils.getSeasonTranslationKey(option.value, LATITUDE);
+            if (key) option.textContent = i18n.t(`viewer.${key}`);
+        });
+    }
+
     function bindUI() {
         // 语言切换
         initLanguageSwitcher();
@@ -1643,6 +1969,7 @@
         
         // 设置默认日期为今天
         customDateInput.value = Utils.formatDate(new Date());
+        updateSeasonOptions();
         
         seasonSelect.addEventListener('change', (e) => {
             const value = e.target.value;
@@ -1650,12 +1977,9 @@
             if (value === 'custom') {
                 // 显示日期选择器
                 customDatePicker.style.display = 'block';
-                // 计算当前选择日期的赤纬角
-                customDeclination = Utils.calculateSolarDeclination(customDateInput.value);
             } else {
                 // 隐藏日期选择器
                 customDatePicker.style.display = 'none';
-                customDeclination = null;
             }
             
             updateSun();
@@ -1663,8 +1987,7 @@
         });
         
         // 自定义日期变化
-        customDateInput.addEventListener('change', (e) => {
-            customDeclination = Utils.calculateSolarDeclination(e.target.value);
+        customDateInput.addEventListener('change', () => {
             updateSun();
             clearSunlightResults();
         });
@@ -1682,29 +2005,44 @@
             });
         }
 
+        const referenceHoursInput = document.getElementById('referenceHoursInput');
+        referenceHoursInput.value = CONFIG.SUNLIGHT_ANALYSIS.REFERENCE_HOURS || 2;
+        referenceHoursInput.addEventListener('change', () => {
+            referenceHoursInput.value = getReferenceHours();
+            clearSunlightResults();
+        });
+
         document.getElementById('toggleOwnOnly').addEventListener('change', (e) => {
             showOwnOnly = !!e.target.checked;
             applyVisibilityFilter(true);
         });
 
         // 日照分析按钮
+        let progressHideTimer = null;
         document.getElementById('calcSunlightBtn').addEventListener('click', async () => {
             const btn = document.getElementById('calcSunlightBtn');
             const progress = document.getElementById('calcProgress');
             const progressFill = document.getElementById('progressFill');
             const progressText = document.getElementById('progressText');
 
+            clearSunlightResults();
+            if (progressHideTimer) {
+                clearTimeout(progressHideTimer);
+                progressHideTimer = null;
+            }
             btn.disabled = true;
             progress.style.display = 'block';
+            progressFill.style.width = '0%';
 
             try {
-                sunlightResults = await calculateSunlightDuration((p) => {
+                const results = await calculateSunlightDuration((p) => {
                     const pct = Math.round(p * 100);
                     progressFill.style.width = pct + '%';
                     progressText.textContent = i18n.t('viewer.calculatingProgress').replace('{0}', pct);
                 });
 
-                if (sunlightResults) {
+                if (results) {
+                    sunlightResults = results;
                     progressText.textContent = i18n.t('viewer.calculationComplete');
                     document.getElementById('toggleHeatmap').disabled = false;
                     document.getElementById('heatmapLegend').style.display = 'block';
@@ -1715,14 +2053,32 @@
                     toggleHeatmap(true);
                 }
             } catch (err) {
-                console.error('日照计算错误:', err);
-                alert(i18n.t('viewer.errorCalcFailed'));
+                if (err?.name === 'AnalysisCancelledError') {
+                    progressText.textContent = i18n.t('viewer.calculationCancelled');
+                } else if (err?.name === 'AnalysisComplexityError') {
+                    progressText.textContent = i18n.t('viewer.calculationCancelled');
+                    alert(i18n.t('viewer.errorTooComplex'));
+                } else if (err?.name === 'InvalidLocationError') {
+                    alert(i18n.t('viewer.errorInvalidLocation'));
+                } else {
+                    console.error('日照计算错误:', err);
+                    alert(i18n.t('viewer.errorCalcFailed'));
+                }
+            } finally {
+                btn.disabled = false;
+                progressHideTimer = setTimeout(() => {
+                    progress.style.display = 'none';
+                    progressHideTimer = null;
+                }, 1500);
             }
+        });
 
-            btn.disabled = false;
-            setTimeout(() => {
-                progress.style.display = 'none';
-            }, 1500);
+        const cancelButton = document.getElementById('cancelSunlightBtn');
+        cancelButton.title = i18n.t('viewer.cancelCalculation');
+        cancelButton.setAttribute('aria-label', i18n.t('viewer.cancelCalculation'));
+        cancelButton.addEventListener('click', () => {
+            cancelActiveAnalysis();
+            document.getElementById('progressText').textContent = i18n.t('viewer.calculationCancelled');
         });
 
         // 热力图开关
@@ -1778,19 +2134,13 @@
         });
     }
 
-    // ========== 动画循环 ==========
-    function animate() {
-        requestAnimationFrame(animate);
-        controls.update();
-        renderer.render(scene, camera);
-    }
-
     // ========== 窗口大小调整 ==========
     const debouncedFitView = Utils.debounce(() => fitViewToBuildings(), 150);
     window.addEventListener('resize', () => {
         camera.aspect = window.innerWidth / window.innerHeight;
         camera.updateProjectionMatrix();
         renderer.setSize(window.innerWidth, window.innerHeight);
+        requestRender();
         debouncedFitView();
     });
 
@@ -1799,19 +2149,24 @@
     bindUI();
     setHour(10);
     updateSun();
-    animate();
 
     // 尝试加载默认数据
     if (typeof DEFAULT_DATA !== 'undefined') {
         console.log('检测到默认数据，正在加载...');
-        rawData = DEFAULT_DATA;
-        syncLatitudeControls(DEFAULT_DATA.latitude);
-        updateSun();
-        NORTH_ANGLE = Utils.normalizeAngle(parseFloat(DEFAULT_DATA.northAngle));
-        document.getElementById('northAngleInput').value = NORTH_ANGLE;
-        updateNorthAngleDisplay();
-        rebuildProjectScene();
-        document.getElementById('empty-state').style.display = 'none';
+        const normalized = normalizeImportedData(DEFAULT_DATA);
+        if (normalized.valid) {
+            if (normalized.warnings.length) console.warn('Default data normalized:', normalized.warnings);
+            rawData = normalized.data;
+            syncLocationControls(rawData);
+            NORTH_ANGLE = rawData.northAngle;
+            document.getElementById('northAngleInput').value = NORTH_ANGLE;
+            updateNorthAngleDisplay();
+            rebuildProjectScene();
+            updateSun();
+            document.getElementById('empty-state').style.display = 'none';
+        } else {
+            console.error('默认数据无效:', normalized.errors);
+        }
     } else {
         console.log('未检测到 DEFAULT_DATA 变量，等待手动上传文件');
     }
@@ -1886,6 +2241,13 @@
         // 更新纬度显示
         updateLatDisplay();
         updateNorthAngleDisplay();
+        updateSeasonOptions();
+
+        const cancelButton = document.getElementById('cancelSunlightBtn');
+        if (cancelButton) {
+            cancelButton.title = i18n.t('viewer.cancelCalculation');
+            cancelButton.setAttribute('aria-label', i18n.t('viewer.cancelCalculation'));
+        }
 
         // 更新时间显示
         const hour = getCurrentHour();
@@ -1931,19 +2293,12 @@
         }
     }
 
-    function getSunlightStatusMeta(hours) {
-        let statusText = i18n.t('viewer.statusGood');
-        let statusClass = 'good';
-
-        if (hours < 2) {
-            statusText = i18n.t('viewer.statusBad');
-            statusClass = 'bad';
-        } else if (hours < 3) {
-            statusText = i18n.t('viewer.statusWarning');
-            statusClass = 'warning';
-        }
-
-        return { text: statusText, className: statusClass };
+    function getSunlightStatusMeta(hours, referenceHours) {
+        const reached = hours >= referenceHours;
+        return {
+            text: i18n.t(reached ? 'viewer.statusReachedReference' : 'viewer.statusBelowReference'),
+            className: reached ? 'good' : 'bad'
+        };
     }
 
     /**
@@ -1965,7 +2320,8 @@
         const color = getSunlightColor(hours, maxHours);
         const colorHex = '#' + color.getHexString();
         const currentLang = i18n.getCurrentLanguage();
-        const statusMeta = getSunlightStatusMeta(statusHours);
+        const referenceHours = sunlightResults?.referenceHours || getReferenceHours();
+        const statusMeta = getSunlightStatusMeta(statusHours, referenceHours);
 
         const unitMaxText = unitMaxHours != null && Math.abs(unitMaxHours - hours) > 1e-6
             ? (currentLang === 'zh'
@@ -2009,34 +2365,17 @@
         const statsDiv = document.getElementById('sunlightStats');
         if (!statsDiv || !results) return;
 
-        const seasonNames = {
-            'zh': {
-                '-23.44': '冬至',
-                '0': '春/秋分',
-                '23.44': '夏至'
-            },
-            'en': {
-                '-23.44': 'Winter Solstice',
-                '0': 'Spring/Autumn Equinox',
-                '23.44': 'Summer Solstice'
-            }
-        };
-
         const currentLang = i18n.getCurrentLanguage();
-        let seasonName = seasonNames[currentLang][results.declination.toString()];
-        
-        // 如果是自定义日期，显示具体日期
-        if (!seasonName) {
-            const customDateInput = document.getElementById('customDateInput');
-            if (customDateInput && customDateInput.value) {
-                const date = new Date(customDateInput.value);
-                const month = date.getMonth() + 1;
-                const day = date.getDate();
-                seasonName = currentLang === 'zh' ? `${month}月${day}日` : `${month}/${day}`;
-            } else {
-                seasonName = currentLang === 'zh' ? '自定义日期' : 'Custom Date';
-            }
-        }
+        const dateParts = Utils.parseDateParts(results.date);
+        const dateText = dateParts
+            ? (currentLang === 'zh'
+                ? `${dateParts.month}月${dateParts.day}日`
+                : `${dateParts.month}/${dateParts.day}`)
+            : results.date;
+        const seasonKey = Utils.getSeasonTranslationKey(results.seasonPreset, results.latitude);
+        const seasonName = seasonKey
+            ? `${i18n.t(`viewer.${seasonKey}`)} (${dateText})`
+            : dateText;
 
         const esc = Utils.escapeHtml;
         const selectedData = currentUnitInfoData;
@@ -2044,8 +2383,10 @@
         const selectedUnitHours = Number.isFinite(selectedData?.unitMaxHours)
             ? selectedData.unitMaxHours
             : Number(selectedData?.sunlightHours) || 0;
-        const selectedStatus = selectedData ? getSunlightStatusMeta(selectedUnitHours) : null;
-        const standardHours = CONFIG.SUNLIGHT_ANALYSIS.STANDARD_HOURS || 2;
+        const referenceHours = results.referenceHours || CONFIG.SUNLIGHT_ANALYSIS.REFERENCE_HOURS || 2;
+        const selectedStatus = selectedData
+            ? getSunlightStatusMeta(selectedUnitHours, referenceHours)
+            : null;
 
         let html = `
             <div class="stats-section">
@@ -2071,10 +2412,12 @@
                     <span class="stat-value">${results.maxHours.toFixed(1)}h</span>
                 </div>
                 <div class="stat-row">
-                    <span class="stat-label">${esc(i18n.t('viewer.statsBelowStandard'))}</span>
-                    <span class="stat-value ${results.belowStandard > 0 ? 'bad' : 'good'}">${results.belowStandard} / ${results.totalUnits}</span>
+                    <span class="stat-label">${esc(i18n.t('viewer.statsBelowReference'))}</span>
+                    <span class="stat-value ${results.belowReference > 0 ? 'bad' : 'good'}">${results.belowReference} / ${results.totalUnits}</span>
                 </div>
-                <div class="stat-note">${esc(i18n.t('viewer.statsScopeUnitMax'))} (${standardHours.toFixed(1).replace(/\.0$/, '')}h ${esc(i18n.t('viewer.statusBad'))})</div>
+                <div class="stat-note">${esc(i18n.t('viewer.statsScopeUnitMax'))}</div>
+                <div class="stat-note">${esc(i18n.t('viewer.referenceHours'))}: ${referenceHours.toFixed(1).replace(/\.0$/, '')}h</div>
+                <div class="stat-note">${esc(i18n.t('viewer.analysisDisclaimer'))}</div>
             </div>
         `;
 
@@ -2111,8 +2454,8 @@
                         <span class="stat-value">${selectedBuilding.avgHours.toFixed(1)}h</span>
                     </div>
                     <div class="stat-row">
-                        <span class="stat-label">${esc(i18n.t('viewer.statsBuildingBelowStandard'))}</span>
-                        <span class="stat-value ${selectedBuilding.belowStandard > 0 ? 'bad' : 'good'}">${selectedBuilding.belowStandard} / ${selectedBuilding.totalUnits}</span>
+                        <span class="stat-label">${esc(i18n.t('viewer.statsBuildingBelowReference'))}</span>
+                        <span class="stat-value ${selectedBuilding.belowReference > 0 ? 'bad' : 'good'}">${selectedBuilding.belowReference} / ${selectedBuilding.totalUnits}</span>
                     </div>
                 </div>
             `;

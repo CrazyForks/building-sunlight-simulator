@@ -16,10 +16,14 @@
     const fileInput = document.getElementById('fileInput');
     const zoomInfo = document.getElementById('zoom-info');
     const emptyTip = document.getElementById('empty-tip');
+    const btnUndoPoint = document.getElementById('btnUndoPoint');
+    const btnFinishPolygon = document.getElementById('btnFinishPolygon');
 
     // 位置/纬度配置元素
     const citySelectEl = document.getElementById('citySelect');
     const projectLatEl = document.getElementById('projectLat');
+    const projectLonEl = document.getElementById('projectLon');
+    const projectTimeZoneEl = document.getElementById('projectTimeZone');
     const projectNorthAngleEl = document.getElementById('projectNorthAngle');
 
     // 默认参数元素
@@ -46,6 +50,7 @@
     let isDragging = false;
     let lastMouseX = 0;
     let lastMouseY = 0;
+    let spacePressed = false;
 
     // 使用配置常量
     const CLOSE_EPS_BASE = CONFIG.EDITOR.CLOSE_EPSILON;
@@ -305,31 +310,32 @@
         if (typeof generateCityOptions === 'function') {
             const defaultCity = CONFIG.DEFAULTS.CITY;
             citySelectEl.innerHTML = generateCityOptions(defaultCity);
-            
-            // 设置默认纬度
-            const defaultLat = getLatitudeByCity(defaultCity);
-            if (defaultLat) {
-                projectLatEl.value = defaultLat;
-            } else {
-                projectLatEl.value = CONFIG.DEFAULTS.LATITUDE;
-            }
+
+            const location = getLocationByCity(defaultCity);
+            projectLatEl.value = location?.lat ?? CONFIG.DEFAULTS.LATITUDE;
+            projectLonEl.value = location?.lon ?? CONFIG.DEFAULTS.LONGITUDE;
+            projectTimeZoneEl.value = location?.timeZone ?? CONFIG.DEFAULTS.TIME_ZONE;
         }
 
         citySelectEl.addEventListener('change', function() {
             const selectedOption = this.options[this.selectedIndex];
-            const lat = selectedOption.dataset.lat;
-            if (lat) {
-                projectLatEl.value = parseFloat(lat);
+            if (selectedOption.dataset.lat) {
+                projectLatEl.value = parseFloat(selectedOption.dataset.lat);
+                projectLonEl.value = parseFloat(selectedOption.dataset.lon);
+                projectTimeZoneEl.value = selectedOption.dataset.timeZone;
             }
         });
 
-        // 手动修改纬度时清空城市选择
-        projectLatEl.addEventListener('input', function() {
-            // 检查是否匹配某个城市
-            const inputLat = parseFloat(this.value);
+        function syncManualLocationToCity() {
+            const inputLat = parseFloat(projectLatEl.value);
+            const inputLon = parseFloat(projectLonEl.value);
+            const inputTimeZone = projectTimeZoneEl.value.trim();
             let matched = false;
             for (const option of citySelectEl.options) {
-                if (option.dataset.lat && Math.abs(parseFloat(option.dataset.lat) - inputLat) < 0.01) {
+                if (option.dataset.lat
+                    && Math.abs(parseFloat(option.dataset.lat) - inputLat) < 0.01
+                    && Math.abs(parseFloat(option.dataset.lon) - inputLon) < 0.01
+                    && option.dataset.timeZone === inputTimeZone) {
                     citySelectEl.value = option.value;
                     matched = true;
                     break;
@@ -338,16 +344,45 @@
             if (!matched) {
                 citySelectEl.value = '';
             }
-        });
+        }
+
+        projectLatEl.addEventListener('input', syncManualLocationToCity);
+        projectLonEl.addEventListener('input', syncManualLocationToCity);
+        projectTimeZoneEl.addEventListener('input', syncManualLocationToCity);
     }
 
     // ========== 图片加载 ==========
+    function hasEditableProjectState() {
+        return buildings.length > 0 || scaleRatio > 0 || scalePoints.length > 0 || currentPoly.length > 0;
+    }
+
+    function resetProjectForNewImage() {
+        scaleRatio = 0;
+        buildings = [];
+        mode = 'idle';
+        scalePoints = [];
+        currentPoly = [];
+        mousePos = { x: 0, y: 0 };
+        isDragging = false;
+        wrapper.classList.remove('grabbing');
+        document.getElementById('scaleInputArea').style.display = 'none';
+        updateScaleStatus();
+        updateDrawModeButton();
+        updateCursor();
+        renderTable();
+    }
+
     fileInput.addEventListener('change', (e) => {
         const file = e.target.files[0];
         if (!file) return;
+        if (hasEditableProjectState() && !confirm(i18n.t('editor.alertConfirmReplaceImage'))) {
+            fileInput.value = '';
+            return;
+        }
         const reader = new FileReader();
         reader.onload = (event) => {
             image.onload = () => {
+                resetProjectForNewImage();
                 canvas.style.display = 'block';
                 emptyTip.style.display = 'none';
                 canvas.width = image.width;
@@ -356,6 +391,9 @@
                 document.getElementById('btnStartScale').disabled = false;
                 resetView();
                 draw();
+            };
+            image.onerror = () => {
+                alert(i18n.t('viewer.errorFileRead'));
             };
             image.src = event.target.result;
         };
@@ -392,12 +430,41 @@
     }
 
     function updateCursor() {
-        if (mode === 'drawing' || mode === 'scaling') {
+        if (isDragging) {
+            wrapper.style.cursor = 'grabbing';
+        } else if (spacePressed || mode === 'idle') {
+            wrapper.style.cursor = 'grab';
+        } else if (mode === 'drawing' || mode === 'scaling') {
             wrapper.style.cursor = 'crosshair';
         } else {
             wrapper.style.cursor = 'grab';
         }
     }
+
+    function isEditableKeyboardTarget(target) {
+        return target?.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(target?.tagName);
+    }
+
+    window.addEventListener('keydown', event => {
+        if (event.code !== 'Space' || isEditableKeyboardTarget(event.target)) return;
+        spacePressed = true;
+        updateCursor();
+        event.preventDefault();
+    });
+
+    window.addEventListener('keyup', event => {
+        if (event.code !== 'Space') return;
+        spacePressed = false;
+        updateCursor();
+        if (!isEditableKeyboardTarget(event.target)) event.preventDefault();
+    });
+
+    window.addEventListener('blur', () => {
+        spacePressed = false;
+        isDragging = false;
+        wrapper.classList.remove('grabbing');
+        updateCursor();
+    });
 
     document.getElementById('btnResetView').addEventListener('click', resetView);
 
@@ -421,14 +488,14 @@
 
     wrapper.addEventListener('mousedown', (e) => {
         if (!isImageLoaded) return;
-        const isSpacePressed = e.getModifierState && e.getModifierState(" ");
 
         // 拖拽视图
-        if (e.button === 1 || (mode === 'idle' && e.button === 0) || (isSpacePressed && e.button === 0)) {
+        if (e.button === 1 || (mode === 'idle' && e.button === 0) || (spacePressed && e.button === 0)) {
             isDragging = true;
             lastMouseX = e.clientX;
             lastMouseY = e.clientY;
             wrapper.classList.add('grabbing');
+            updateCursor();
             e.preventDefault();
             return;
         }
@@ -440,6 +507,7 @@
                 scalePoints.push(p);
                 if (scalePoints.length === 2) {
                     mode = 'idle';
+                    updateDrawModeButton();
                     updateCursor();
                     document.getElementById('scaleInputArea').style.display = 'block';
                 }
@@ -452,10 +520,7 @@
 
         // 右键撤销
         if (e.button === 2) {
-            if (mode === 'drawing' && currentPoly.length > 0) {
-                currentPoly.pop();
-                draw();
-            }
+            undoCurrentPoint();
         }
     });
 
@@ -487,6 +552,7 @@
     window.addEventListener('mouseup', () => {
         isDragging = false;
         wrapper.classList.remove('grabbing');
+        updateCursor();
     });
 
     canvas.addEventListener('contextmenu', e => e.preventDefault());
@@ -524,11 +590,13 @@
                 lastMouseX = touch.clientX;
                 lastMouseY = touch.clientY;
                 wrapper.classList.add('grabbing');
+                updateCursor();
             } else if (mode === 'scaling') {
                 const p = getTouchCanvasCoords(touch);
                 scalePoints.push(p);
                 if (scalePoints.length === 2) {
                     mode = 'idle';
+                    updateDrawModeButton();
                     updateCursor();
                     document.getElementById('scaleInputArea').style.display = 'block';
                 }
@@ -589,12 +657,14 @@
             if (isDragging) {
                 isDragging = false;
                 wrapper.classList.remove('grabbing');
+                updateCursor();
             }
         }
     });
 
     // ========== 绘图函数 ==========
     function draw() {
+        updateDrawActionButtons();
         ctx.clearRect(0, 0, canvas.width, canvas.height);
         if (!isImageLoaded) return;
         ctx.drawImage(image, 0, 0);
@@ -720,10 +790,17 @@
         draw();
     }
 
+    function undoCurrentPoint() {
+        if (mode !== 'drawing' || currentPoly.length === 0) return;
+        currentPoly.pop();
+        draw();
+    }
+
     // ========== 比例尺标定 ==========
     document.getElementById('btnStartScale').addEventListener('click', () => {
         scalePoints = [];
         mode = 'scaling';
+        updateDrawModeButton();
         updateCursor();
         document.getElementById('scaleStatus').innerText = i18n.t('editor.scalePrompt');
         document.getElementById('scaleInputArea').style.display = 'none';
@@ -742,7 +819,7 @@
             return;
         }
         scaleRatio = distReal / distPx;
-        document.getElementById('scaleStatus').innerText = `${i18n.t('editor.scaleSet')} (1px ≈ ${scaleRatio.toFixed(4)}m)`;
+        updateScaleStatus();
         document.getElementById('scaleInputArea').style.display = 'none';
         toggleDrawMode(true);
         renderTable();
@@ -753,22 +830,28 @@
     btnDrawMode.addEventListener('click', () => {
         toggleDrawMode(mode !== 'drawing');
     });
+    btnUndoPoint.addEventListener('click', undoCurrentPoint);
+    btnFinishPolygon.addEventListener('click', () => {
+        if (mode === 'drawing' && currentPoly.length >= 3) finishPolygon();
+    });
+
+    function updateDrawActionButtons() {
+        const drawing = mode === 'drawing';
+        btnUndoPoint.disabled = !drawing || currentPoly.length === 0;
+        btnFinishPolygon.disabled = !drawing || currentPoly.length < 3;
+    }
 
     function toggleDrawMode(active) {
         if (active) {
             mode = 'drawing';
-            btnDrawMode.innerText = i18n.t('editor.modeDrawing');
-            btnDrawMode.style.background = "#28a745";
-            btnDrawMode.style.color = "white";
         } else {
             mode = 'idle';
-            btnDrawMode.innerText = i18n.t('editor.modeIdle');
-            btnDrawMode.style.background = "#6c757d";
-            btnDrawMode.style.color = "white";
             currentPoly = [];
             draw();
         }
         updateCursor();
+        updateDrawModeButton();
+        updateDrawActionButtons();
     }
 
     // ========== 表格渲染 ==========
@@ -1014,7 +1097,15 @@
         const centerY = (minY + maxY) / 2;
 
         const round2 = n => Utils.roundTo(n, 2);
-        const lat = parseFloat(projectLatEl.value) || CONFIG.DEFAULTS.LATITUDE;
+        const lat = parseFloat(projectLatEl.value);
+        const lon = parseFloat(projectLonEl.value);
+        const timeZone = projectTimeZoneEl.value.trim();
+        if (!Number.isFinite(lat) || lat < -90 || lat > 90
+            || !Number.isFinite(lon) || lon < -180 || lon > 180
+            || !Utils.isValidTimeZone(timeZone)) {
+            alert(i18n.t('editor.alertInvalidLocation'));
+            return;
+        }
         const northAngle = normalizeAngle(parseFloat(projectNorthAngleEl.value));
         projectNorthAngleEl.value = northAngle;
 
@@ -1022,6 +1113,8 @@
             const exportData = {
                 version: CONFIG.APP.VERSION,
                 latitude: lat,
+                longitude: lon,
+                timeZone,
                 northAngle,
                 scaleRatio: scaleRatio,
                 origin: { x: centerX, y: centerY },
@@ -1064,7 +1157,11 @@
                 })
             };
 
-            Utils.downloadFile(JSON.stringify(exportData, null, 2), 'buildings_config.json', 'application/json');
+            const normalized = Utils.normalizeBuildingData(exportData);
+            if (!normalized.valid) {
+                throw new Error(normalized.errors.slice(0, 8).join('\n'));
+            }
+            Utils.downloadFile(JSON.stringify(normalized.data, null, 2), 'buildings_config.json', 'application/json');
         } catch (error) {
             alert(error?.message || i18n.t('editor.alertInvalidSplitConfig').replace('{0}', '').replace('{1}', ''));
         }
@@ -1267,10 +1364,14 @@
         if (mode === 'drawing') {
             btnDrawMode.setAttribute('data-i18n', 'editor.modeDrawing');
             btnDrawMode.innerText = i18n.t('editor.modeDrawing');
+            btnDrawMode.style.background = '#28a745';
         } else {
             btnDrawMode.setAttribute('data-i18n', 'editor.modeIdle');
             btnDrawMode.innerText = i18n.t('editor.modeIdle');
+            btnDrawMode.style.background = '#6c757d';
         }
+        btnDrawMode.style.color = 'white';
+        updateDrawActionButtons();
     }
 
 })();
