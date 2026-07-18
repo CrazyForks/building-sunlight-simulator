@@ -14,7 +14,7 @@ const CONFIG = (function() {
         // 应用信息
         APP: {
             NAME: 'Building Sunlight Simulator',
-            VERSION: '3.0.0',
+            VERSION: '3.1.0',
             AUTHOR: 'seanwong17'
         },
 
