@@ -441,6 +441,17 @@
         }
     }
 
+    function addScalePoint(point) {
+        scalePoints.push(point);
+        if (scalePoints.length === 2) {
+            mode = 'idle';
+            updateDrawModeButton();
+            updateCursor();
+            document.getElementById('scaleInputArea').style.display = 'block';
+        }
+        draw();
+    }
+
     function isEditableKeyboardTarget(target) {
         return target?.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(target?.tagName);
     }
@@ -504,14 +515,7 @@
         if (e.button === 0) {
             const p = getCanvasCoordinates(e);
             if (mode === 'scaling') {
-                scalePoints.push(p);
-                if (scalePoints.length === 2) {
-                    mode = 'idle';
-                    updateDrawModeButton();
-                    updateCursor();
-                    document.getElementById('scaleInputArea').style.display = 'block';
-                }
-                draw();
+                addScalePoint(p);
             } else if (mode === 'drawing') {
                 currentPoly.push(p);
                 draw();
@@ -558,8 +562,10 @@
     canvas.addEventListener('contextmenu', e => e.preventDefault());
 
     // ========== 触摸事件支持 ==========
-    let touchStartTime = 0;
+    const TOUCH_TAP_MOVE_THRESHOLD = 8;
     let lastTouchDist = 0;
+    let pendingTouchAction = null;
+    let multiTouchGesture = false;
 
     function getTouchCanvasCoords(touch) {
         const rect = wrapper.getBoundingClientRect();
@@ -569,11 +575,50 @@
         };
     }
 
+    function findTouchByIdentifier(touchList, identifier) {
+        for (let index = 0; index < touchList.length; index++) {
+            if (touchList[index].identifier === identifier) return touchList[index];
+        }
+        return null;
+    }
+
+    function commitPendingTouchAction(touch) {
+        const pending = pendingTouchAction;
+        pendingTouchAction = null;
+        if (!pending || pending.cancelled || multiTouchGesture || mode !== pending.mode || !touch) return;
+
+        const point = getTouchCanvasCoords(touch);
+        if (pending.mode === 'scaling') {
+            addScalePoint(point);
+        } else if (pending.mode === 'drawing') {
+            currentPoly.push(point);
+            mousePos = point;
+            draw();
+        }
+    }
+
+    function stopTouchDragging() {
+        if (!isDragging) return;
+        isDragging = false;
+        wrapper.classList.remove('grabbing');
+        updateCursor();
+    }
+
+    function resetTouchGesture() {
+        pendingTouchAction = null;
+        multiTouchGesture = false;
+        lastTouchDist = 0;
+        stopTouchDragging();
+    }
+
     wrapper.addEventListener('touchstart', (e) => {
         if (!isImageLoaded) return;
         e.preventDefault();
 
-        if (e.touches.length === 2) {
+        if (e.touches.length >= 2) {
+            pendingTouchAction = null;
+            multiTouchGesture = true;
+            stopTouchDragging();
             // 双指缩放
             const dx = e.touches[0].clientX - e.touches[1].clientX;
             const dy = e.touches[0].clientY - e.touches[1].clientY;
@@ -582,8 +627,8 @@
         }
 
         if (e.touches.length === 1) {
-            touchStartTime = Date.now();
             const touch = e.touches[0];
+            multiTouchGesture = false;
 
             if (mode === 'idle') {
                 isDragging = true;
@@ -591,20 +636,18 @@
                 lastMouseY = touch.clientY;
                 wrapper.classList.add('grabbing');
                 updateCursor();
-            } else if (mode === 'scaling') {
-                const p = getTouchCanvasCoords(touch);
-                scalePoints.push(p);
-                if (scalePoints.length === 2) {
-                    mode = 'idle';
-                    updateDrawModeButton();
-                    updateCursor();
-                    document.getElementById('scaleInputArea').style.display = 'block';
+            } else if (mode === 'scaling' || mode === 'drawing') {
+                pendingTouchAction = {
+                    identifier: touch.identifier,
+                    mode,
+                    startClientX: touch.clientX,
+                    startClientY: touch.clientY,
+                    cancelled: false
+                };
+                if (mode === 'drawing') {
+                    mousePos = getTouchCanvasCoords(touch);
+                    draw();
                 }
-                draw();
-            } else if (mode === 'drawing') {
-                const p = getTouchCanvasCoords(touch);
-                currentPoly.push(p);
-                draw();
             }
         }
     }, { passive: false });
@@ -613,10 +656,16 @@
         if (!isImageLoaded) return;
         e.preventDefault();
 
-        if (e.touches.length === 2 && lastTouchDist > 0) {
+        if (e.touches.length >= 2) {
+            pendingTouchAction = null;
+            multiTouchGesture = true;
             const dx = e.touches[0].clientX - e.touches[1].clientX;
             const dy = e.touches[0].clientY - e.touches[1].clientY;
             const dist = Math.hypot(dx, dy);
+            if (lastTouchDist <= 0) {
+                lastTouchDist = dist;
+                return;
+            }
             const scale = dist / lastTouchDist;
             const midX = (e.touches[0].clientX + e.touches[1].clientX) / 2;
             const midY = (e.touches[0].clientY + e.touches[1].clientY) / 2;
@@ -636,13 +685,21 @@
 
         if (e.touches.length === 1) {
             const touch = e.touches[0];
+            if (multiTouchGesture) return;
             if (isDragging) {
                 viewX += touch.clientX - lastMouseX;
                 viewY += touch.clientY - lastMouseY;
                 lastMouseX = touch.clientX;
                 lastMouseY = touch.clientY;
                 updateTransform();
-            } else if (mode === 'drawing') {
+            } else if (pendingTouchAction?.identifier === touch.identifier) {
+                const movement = Math.hypot(
+                    touch.clientX - pendingTouchAction.startClientX,
+                    touch.clientY - pendingTouchAction.startClientY
+                );
+                if (movement > TOUCH_TAP_MOVE_THRESHOLD) pendingTouchAction.cancelled = true;
+            }
+            if (mode === 'drawing' && pendingTouchAction) {
                 mousePos = getTouchCanvasCoords(touch);
                 draw();
             }
@@ -653,14 +710,21 @@
         if (!isImageLoaded) return;
 
         if (e.touches.length === 0) {
+            const endedTouch = pendingTouchAction
+                ? findTouchByIdentifier(e.changedTouches, pendingTouchAction.identifier)
+                : null;
+            stopTouchDragging();
+            commitPendingTouchAction(endedTouch);
+            pendingTouchAction = null;
+            multiTouchGesture = false;
             lastTouchDist = 0;
-            if (isDragging) {
-                isDragging = false;
-                wrapper.classList.remove('grabbing');
-                updateCursor();
-            }
+        } else {
+            pendingTouchAction = null;
+            if (e.touches.length < 2) lastTouchDist = 0;
         }
     });
+
+    wrapper.addEventListener('touchcancel', resetTouchGesture);
 
     // ========== 绘图函数 ==========
     function draw() {

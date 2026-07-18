@@ -306,14 +306,16 @@
         ctx.fillStyle = grd;
         ctx.fillRect(0, 0, width, height);
 
-        for (let f = 0; f < floors; f++) {
-            const y0 = Math.floor(f * height / floors);
-            const y1 = Math.floor((f + 1) * height / floors);
+        // flipY 将 Canvas 顶部映射到 UV v=1，因此从最高层开始绘制。
+        for (let canvasFloor = 0; canvasFloor < floors; canvasFloor++) {
+            const floorIndex = floors - canvasFloor - 1;
+            const y0 = Math.floor(canvasFloor * height / floors);
+            const y1 = Math.floor((canvasFloor + 1) * height / floors);
             const bandH = y1 - y0;
 
-            const nUnits = Math.max(1, unitsPerFloor[f] || 1);
+            const nUnits = Math.max(1, unitsPerFloor[floorIndex] || 1);
             if (nUnits > 1) {
-                const ratios = getUnitRatiosForFloor(unitRatiosPerFloor, f, floors, nUnits);
+                const ratios = getUnitRatiosForFloor(unitRatiosPerFloor, floorIndex, floors, nUnits);
                 let acc = 0;
                 for (let i = 0; i < nUnits - 1; i++) {
                     const ratio = ratios ? ratios[i] : (1 / nUnits);
@@ -326,7 +328,7 @@
                 }
             }
 
-            if (f < floors - 1) {
+            if (canvasFloor < floors - 1) {
                 ctx.fillStyle = 'rgba(35,45,60,0.55)';
                 ctx.fillRect(0, y1 - 1, width, 2);
                 ctx.fillStyle = 'rgba(255,255,255,0.25)';
@@ -335,6 +337,7 @@
         }
 
         const tex = new THREE.CanvasTexture(canvas);
+        tex.flipY = true;
         tex.wrapS = THREE.ClampToEdgeWrapping;
         tex.wrapT = THREE.ClampToEdgeWrapping;
         tex.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy?.() || 1);

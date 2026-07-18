@@ -86,6 +86,38 @@ async function uploadJson(page, content, name = 'project.json') {
     });
 }
 
+async function calculateAverageHours(page, useWorker = true) {
+    if (!useWorker) {
+        await page.evaluate(() => {
+            window.__nativeWorkerForTest = window.Worker;
+            window.Worker = undefined;
+        });
+    }
+
+    try {
+        await page.locator('#calcSunlightBtn').click();
+        await page.waitForFunction(
+            () => !document.getElementById('toggleHeatmap').disabled,
+            null,
+            { timeout: 30000 }
+        );
+        const averageText = await page.locator('#sunlightStats .stats-section')
+            .first()
+            .locator('.stat-row')
+            .nth(2)
+            .locator('.stat-value')
+            .textContent();
+        return Number.parseFloat(averageText);
+    } finally {
+        if (!useWorker) {
+            await page.evaluate(() => {
+                window.Worker = window.__nativeWorkerForTest;
+                delete window.__nativeWorkerForTest;
+            });
+        }
+    }
+}
+
 async function blockExternalRequests(page) {
     const allowedOrigin = new URL(baseUrl).origin;
     const blocked = [];
@@ -189,6 +221,8 @@ async function testViewer(browser) {
         window.__heatmapConstruction = { planeGeometries: 0, instancedMeshes: 0, instanceCapacity: 0 };
         window.__originalPlaneGeometry = THREE.PlaneGeometry;
         window.__originalInstancedMesh = THREE.InstancedMesh;
+        window.__originalCanvasTexture = THREE.CanvasTexture;
+        window.__facadeTextureInspection = null;
         THREE.PlaneGeometry = class CountingPlaneGeometry extends window.__originalPlaneGeometry {
             constructor(...args) {
                 super(...args);
@@ -200,6 +234,14 @@ async function testViewer(browser) {
                 super(geometry, material, count);
                 window.__heatmapConstruction.instancedMeshes++;
                 window.__heatmapConstruction.instanceCapacity = count;
+            }
+        };
+        THREE.CanvasTexture = class InspectableCanvasTexture extends window.__originalCanvasTexture {
+            constructor(image, ...args) {
+                super(image, ...args);
+                if (image?.height === 56 && image?.width > 256) {
+                    window.__facadeTextureInspection = { canvas: image, texture: this };
+                }
             }
         };
     });
@@ -220,6 +262,28 @@ async function testViewer(browser) {
         }]
     }), 'variable-apartments.json');
     assert.equal(await page.locator('#northAngleInput').inputValue(), '90');
+    const facadeBands = await page.evaluate(() => {
+        const inspection = window.__facadeTextureInspection;
+        if (!inspection) return null;
+        const { canvas, texture } = inspection;
+        const context = canvas.getContext('2d');
+        const x = Math.round(canvas.width / 2);
+        const luminanceAt = y => {
+            const pixel = context.getImageData(x, y, 1, 1).data;
+            return pixel[0] * 0.2126 + pixel[1] * 0.7152 + pixel[2] * 0.0722;
+        };
+        return {
+            flipY: texture.flipY,
+            topLuminance: luminanceAt(Math.floor(canvas.height * 0.25)),
+            bottomLuminance: luminanceAt(Math.floor(canvas.height * 0.75))
+        };
+    });
+    assert.ok(facadeBands, 'Facade texture was not captured');
+    assert.equal(facadeBands.flipY, true);
+    assert.ok(
+        facadeBands.topLuminance + 30 < facadeBands.bottomLuminance,
+        JSON.stringify(facadeBands)
+    );
     await page.locator('#referenceHoursInput').fill('4');
     await page.locator('#referenceHoursInput').dispatchEvent('change');
     await page.locator('#calcSunlightBtn').click();
@@ -243,7 +307,39 @@ async function testViewer(browser) {
     await page.evaluate(() => {
         THREE.PlaneGeometry = window.__originalPlaneGeometry;
         THREE.InstancedMesh = window.__originalInstancedMesh;
+        THREE.CanvasTexture = window.__originalCanvasTexture;
     });
+
+    await uploadJson(page, projectJson(), 'worker-clear-sky.json');
+    const clearWorkerHours = await calculateAverageHours(page, true);
+    const clearMainHours = await calculateAverageHours(page, false);
+    assert.ok(clearWorkerHours > 0, `Expected positive clear-sky hours, got ${clearWorkerHours}`);
+    assert.equal(clearWorkerHours, clearMainHours);
+
+    const partialOcclusionProject = JSON.parse(projectJson());
+    partialOcclusionProject.buildings.push({
+        name: 'Partial Occluder',
+        floors: 1,
+        floorHeight: 4,
+        totalHeight: 4,
+        units: 1,
+        isThisCommunity: false,
+        shape: [
+            { x: -100, y: 8 },
+            { x: 100, y: 8 },
+            { x: 100, y: 10 },
+            { x: -100, y: 10 }
+        ]
+    });
+    await uploadJson(page, JSON.stringify(partialOcclusionProject), 'worker-partial-occlusion.json');
+    const partialWorkerHours = await calculateAverageHours(page, true);
+    const partialMainHours = await calculateAverageHours(page, false);
+    assert.ok(partialWorkerHours > 0, `Expected positive partial-occlusion hours, got ${partialWorkerHours}`);
+    assert.ok(
+        partialWorkerHours < clearWorkerHours,
+        `Expected ${partialWorkerHours}h to be below clear-sky ${clearWorkerHours}h`
+    );
+    assert.equal(partialWorkerHours, partialMainHours);
 
     const distantOccluders = [
         [[2495, -10000], [2510, -10000], [2510, 10000], [2495, 10000]],
@@ -273,21 +369,10 @@ async function testViewer(browser) {
             ...distantOccluders
         ]
     }), 'distant-occluders.json');
-    await page.locator('#calcSunlightBtn').click();
-    await page.waitForFunction(() => !document.getElementById('toggleHeatmap').disabled, null, { timeout: 30000 });
-    const distantScopeRows = page.locator('#sunlightStats .stats-section').first().locator('.stat-row');
-    assert.equal(await distantScopeRows.nth(2).locator('.stat-value').textContent(), '0.0h');
-    await page.evaluate(() => {
-        window.__nativeWorker = window.Worker;
-        window.Worker = undefined;
-    });
-    await page.locator('#calcSunlightBtn').click();
-    await page.waitForFunction(() => !document.getElementById('toggleHeatmap').disabled, null, { timeout: 30000 });
-    assert.equal(await distantScopeRows.nth(2).locator('.stat-value').textContent(), '0.0h');
-    await page.evaluate(() => {
-        window.Worker = window.__nativeWorker;
-        delete window.__nativeWorker;
-    });
+    const distantWorkerHours = await calculateAverageHours(page, true);
+    const distantMainHours = await calculateAverageHours(page, false);
+    assert.equal(distantWorkerHours, 0);
+    assert.equal(distantMainHours, 0);
 
     await uploadJson(page, projectJson(), 'small.json');
     await page.waitForTimeout(200);
@@ -516,6 +601,41 @@ async function dispatchTouchTap(page, clientX, clientY) {
     }, { clientX, clientY });
 }
 
+async function dispatchPinchGesture(page, centerX, centerY) {
+    await page.evaluate(({ centerX, centerY }) => {
+        const target = document.getElementById('canvas-wrapper');
+        const makeTouch = (identifier, clientX, clientY) => new Touch({
+            identifier,
+            target,
+            clientX,
+            clientY,
+            pageX: clientX,
+            pageY: clientY,
+            radiusX: 1,
+            radiusY: 1,
+            force: 0.5
+        });
+        const dispatch = (type, touches, changedTouches) => target.dispatchEvent(new TouchEvent(type, {
+            bubbles: true,
+            cancelable: true,
+            touches,
+            targetTouches: touches,
+            changedTouches
+        }));
+
+        const first = makeTouch(101, centerX - 30, centerY);
+        dispatch('touchstart', [first], [first]);
+        const second = makeTouch(102, centerX + 30, centerY);
+        dispatch('touchstart', [first, second], [second]);
+
+        const movedFirst = makeTouch(101, centerX - 50, centerY);
+        const movedSecond = makeTouch(102, centerX + 50, centerY);
+        dispatch('touchmove', [movedFirst, movedSecond], [movedFirst, movedSecond]);
+        dispatch('touchend', [movedFirst], [movedSecond]);
+        dispatch('touchend', [], [movedFirst]);
+    }, { centerX, centerY });
+}
+
 async function testEditorTouchControls(browser) {
     const context = await browser.newContext({
         viewport: { width: 700, height: 900 },
@@ -537,9 +657,24 @@ async function testEditorTouchControls(browser) {
     const canvas = page.locator('#editorCanvas');
     let box = await canvas.boundingBox();
     assert.ok(box);
+    const transformBeforeScalePinch = await canvas.getAttribute('style');
+    await dispatchPinchGesture(page, box.x + box.width * 0.5, box.y + box.height * 0.35);
+    assert.notEqual(await canvas.getAttribute('style'), transformBeforeScalePinch);
+    assert.equal(await page.locator('#scaleInputArea').isVisible(), false);
+
+    box = await canvas.boundingBox();
     await dispatchTouchTap(page, box.x + box.width * 0.35, box.y + box.height * 0.35);
+    assert.equal(await page.locator('#scaleInputArea').isVisible(), false);
     await dispatchTouchTap(page, box.x + box.width * 0.65, box.y + box.height * 0.35);
+    assert.equal(await page.locator('#scaleInputArea').isVisible(), true);
     await page.locator('#btnConfirmScale').tap();
+
+    box = await canvas.boundingBox();
+    const transformBeforeDrawingPinch = await canvas.getAttribute('style');
+    await dispatchPinchGesture(page, box.x + box.width * 0.5, box.y + box.height * 0.48);
+    assert.notEqual(await canvas.getAttribute('style'), transformBeforeDrawingPinch);
+    assert.equal(await page.locator('#btnUndoPoint').isDisabled(), true);
+    assert.equal(await page.locator('#btnFinishPolygon').isDisabled(), true);
 
     box = await canvas.boundingBox();
     const polygon = [
