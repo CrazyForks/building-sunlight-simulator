@@ -70,6 +70,60 @@ const Utils = (function() {
         return Math.round(value * multiplier) / multiplier;
     }
 
+    function stableSerialize(value) {
+        const ancestors = new Set();
+
+        function serialize(item) {
+            if (item === null) return 'null';
+            if (typeof item === 'number') {
+                if (!Number.isFinite(item)) throw new TypeError('Cannot serialize a non-finite number');
+                return Object.is(item, -0) ? '0' : JSON.stringify(item);
+            }
+            if (typeof item === 'boolean' || typeof item === 'string') return JSON.stringify(item);
+            if (Array.isArray(item)) {
+                if (ancestors.has(item)) throw new TypeError('Cannot serialize a circular value');
+                ancestors.add(item);
+                const result = `[${item.map(entry => serialize(entry === undefined ? null : entry)).join(',')}]`;
+                ancestors.delete(item);
+                return result;
+            }
+            if (typeof item === 'object') {
+                if (ancestors.has(item)) throw new TypeError('Cannot serialize a circular value');
+                ancestors.add(item);
+                const entries = Object.keys(item)
+                    .filter(key => item[key] !== undefined && typeof item[key] !== 'function')
+                    .sort()
+                    .map(key => `${JSON.stringify(key)}:${serialize(item[key])}`);
+                ancestors.delete(item);
+                return `{${entries.join(',')}}`;
+            }
+            throw new TypeError(`Cannot serialize value of type ${typeof item}`);
+        }
+
+        return serialize(value);
+    }
+
+    function hashString(value) {
+        const source = String(value);
+        let first = 0x811c9dc5;
+        let second = 0x9e3779b9;
+        for (let index = 0; index < source.length; index++) {
+            const code = source.charCodeAt(index);
+            first ^= code;
+            first = Math.imul(first, 0x01000193);
+            second ^= code;
+            second = Math.imul(second, 0x85ebca6b);
+            second ^= second >>> 13;
+        }
+        first ^= first >>> 16;
+        second ^= second >>> 16;
+        return `${(first >>> 0).toString(16).padStart(8, '0')}${(second >>> 0).toString(16).padStart(8, '0')}`;
+    }
+
+    function createFingerprint(value) {
+        return hashString(stableSerialize(value));
+    }
+
     /**
      * 归一化角度到 [-180, 180]
      * @param {number} angle - 输入角度
@@ -802,6 +856,9 @@ const Utils = (function() {
         clampInt,
         clampFloat,
         roundTo,
+        stableSerialize,
+        hashString,
+        createFingerprint,
         normalizeAngle,
         formatTime,
         createTimeSamples,

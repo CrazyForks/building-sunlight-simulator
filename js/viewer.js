@@ -51,6 +51,7 @@
 
     // 网格
     const gridHelper = new THREE.GridHelper(2000, 100, 0xcfd8e3, 0xe9eff5);
+    gridHelper.position.y = 0.02;
     scene.add(gridHelper);
 
     // 创建罗盘指南针
@@ -190,6 +191,16 @@
     const HEATMAP_EDGE_LOCK_MIN = 0.03;
     const HEATMAP_EDGE_LOCK_MAX = 0.16;
     const HEATMAP_OCCLUSION_EPS = 0.8;
+    const PRECOMPUTED_SCHEMA_VERSION = CONFIG.SUNLIGHT_ANALYSIS.PRECOMPUTED_SCHEMA_VERSION;
+    const PRECOMPUTED_ALGORITHM_VERSION = CONFIG.SUNLIGHT_ANALYSIS.PRECOMPUTED_ALGORITHM_VERSION;
+    const MAX_PRECOMPUTED_ENTRIES = CONFIG.SUNLIGHT_ANALYSIS.MAX_PRECOMPUTED_ENTRIES;
+    const ANALYSIS_SEASON_PRESETS = new Set([
+        'march-equinox',
+        'june-solstice',
+        'september-equinox',
+        'december-solstice',
+        'custom'
+    ]);
 
     // ========== 状态变量 ==========
     let LATITUDE = CONFIG.DEFAULTS.LATITUDE;
@@ -210,6 +221,32 @@
     let currentUnitInfoData = null;
     let analysisVersion = 0;
     let activeAnalysisTask = null;
+    let precomputedEntries = new Map();
+    let importedPrecomputedSelection = null;
+    let importDragDepth = 0;
+
+    const loadingOverlay = document.getElementById('loadingOverlay');
+    const loadingText = document.getElementById('loadingText');
+    const dropOverlay = document.getElementById('dropOverlay');
+    const exportAnalysisButton = document.getElementById('exportAnalysisBtn');
+    const precomputedStatus = document.getElementById('precomputedStatus');
+
+    function waitForNextPaint() {
+        return new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    }
+
+    function setLoadingOverlayVisible(visible, messageKey = 'viewer.importLoading') {
+        if (!loadingOverlay) return;
+        loadingOverlay.classList.toggle('is-active', visible);
+        loadingOverlay.setAttribute('aria-hidden', visible ? 'false' : 'true');
+        if (visible && loadingText) loadingText.textContent = i18n.t(messageKey);
+    }
+
+    function setDropOverlayVisible(visible) {
+        if (!dropOverlay) return;
+        dropOverlay.classList.toggle('is-active', visible);
+        dropOverlay.setAttribute('aria-hidden', visible ? 'false' : 'true');
+    }
 
     class AnalysisCancelledError extends Error {
         constructor() {
@@ -927,14 +964,21 @@
     function buildSunlightResultsFromPoints(allPoints, snapshot) {
         const results = {
             points: allPoints,
+            source: snapshot.source || 'calculated',
+            algorithmVersion: snapshot.algorithmVersion,
+            projectFingerprint: snapshot.projectFingerprint,
+            samplingFingerprint: snapshot.samplingFingerprint,
             declination: snapshot.declination,
             latitude: snapshot.latitude,
             longitude: snapshot.longitude,
             timeZone: snapshot.timeZone,
+            northAngle: snapshot.northAngle,
             date: snapshot.date,
             seasonPreset: snapshot.seasonPreset,
             solarTimeOffset: snapshot.solarTimeOffset,
             timeStep: snapshot.timeStep,
+            startHour: snapshot.startHour,
+            endHour: snapshot.endHour,
             referenceHours: snapshot.referenceHours,
             buildings: {}
         };
@@ -1034,6 +1078,276 @@
         const fallback = CONFIG.SUNLIGHT_ANALYSIS.REFERENCE_HOURS || 2;
         const value = Number(input?.value);
         return Number.isFinite(value) ? Math.min(12, Math.max(0.1, value)) : fallback;
+    }
+
+    function createAnalysisProjectFingerprint(data) {
+        return Utils.createFingerprint({ buildings: data?.buildings || [] });
+    }
+
+    function createSamplingFingerprint(points) {
+        return Utils.createFingerprint((points || []).map(point => ({
+            buildingIndex: point.buildingIndex,
+            floor: point.floor,
+            unit: point.unit,
+            x: Utils.roundTo(point.x, 6),
+            y: Utils.roundTo(point.y, 6),
+            z: Utils.roundTo(point.z, 6),
+            wallDataX: Utils.roundTo(point.wallDataX, 6),
+            wallDataY: Utils.roundTo(point.wallDataY, 6),
+            outwardX: Utils.roundTo(point.outward?.x || 0, 6),
+            outwardY: Utils.roundTo(point.outward?.y || 0, 6),
+            cellWidth: Utils.roundTo(point.cellWidth, 6)
+        })));
+    }
+
+    function createAnalysisIdentity(analysisData, solarSettings = getAnalysisSolarSettings()) {
+        return {
+            algorithmVersion: PRECOMPUTED_ALGORITHM_VERSION,
+            projectFingerprint: createAnalysisProjectFingerprint(analysisData),
+            latitude: Utils.roundTo(LATITUDE, 8),
+            longitude: Utils.roundTo(LONGITUDE, 8),
+            timeZone: TIME_ZONE,
+            northAngle: Utils.roundTo(NORTH_ANGLE, 8),
+            date: solarSettings.date,
+            declination: Utils.roundTo(solarSettings.declination, 8),
+            solarTimeOffset: Utils.roundTo(solarSettings.solarTimeOffset, 8),
+            timeStep: CONFIG.SUNLIGHT_ANALYSIS.TIME_INTERVAL,
+            startHour: CONFIG.TIME.MIN_HOUR,
+            endHour: CONFIG.TIME.MAX_HOUR
+        };
+    }
+
+    function createAnalysisKey(identity) {
+        return Utils.createFingerprint(identity);
+    }
+
+    function collectAnalysisPoints(analysisData, maxPoints = CONFIG.SUNLIGHT_ANALYSIS.MAX_SAMPLE_POINTS) {
+        const points = [];
+        analysisData.buildings.forEach((building, index) => {
+            if (building.isThisCommunity === false) return;
+            const remaining = maxPoints - points.length;
+            points.push(...calculateSamplingPoints(building, index, remaining));
+        });
+        return points;
+    }
+
+    function getCurrentProjectPrecomputedEntries() {
+        if (!currentData) return [];
+        const projectFingerprint = createAnalysisProjectFingerprint(currentData);
+        return Array.from(precomputedEntries.values())
+            .filter(entry => entry.identity.projectFingerprint === projectFingerprint);
+    }
+
+    function updatePrecomputedControls(messageKey = null, replacement = null) {
+        const entries = getCurrentProjectPrecomputedEntries();
+        if (exportAnalysisButton) exportAnalysisButton.disabled = entries.length === 0;
+        if (!precomputedStatus) return;
+        if (messageKey) {
+            const text = replacement == null
+                ? i18n.t(messageKey)
+                : i18n.t(messageKey).replace('{0}', replacement);
+            precomputedStatus.textContent = text;
+        } else {
+            precomputedStatus.textContent = entries.length > 0
+                ? i18n.t('viewer.precomputedReady').replace('{0}', entries.length)
+                : '';
+        }
+    }
+
+    function cacheSunlightResult(results) {
+        if (!results?.projectFingerprint || !results?.samplingFingerprint || !Array.isArray(results.points)) return;
+        const identity = {
+            algorithmVersion: results.algorithmVersion,
+            projectFingerprint: results.projectFingerprint,
+            latitude: results.latitude,
+            longitude: results.longitude,
+            timeZone: results.timeZone,
+            northAngle: results.northAngle,
+            date: results.date,
+            declination: results.declination,
+            solarTimeOffset: results.solarTimeOffset,
+            timeStep: results.timeStep,
+            startHour: results.startHour,
+            endHour: results.endHour
+        };
+        const key = createAnalysisKey(identity);
+        const entry = {
+            key,
+            identity,
+            samplingFingerprint: results.samplingFingerprint,
+            pointCount: results.points.length,
+            hours: results.points.map(point => Utils.roundTo(Number(point.sunlightHours) || 0, 4)),
+            createdAt: new Date().toISOString()
+        };
+        precomputedEntries.delete(key);
+        precomputedEntries.set(key, entry);
+        while (precomputedEntries.size > MAX_PRECOMPUTED_ENTRIES) {
+            precomputedEntries.delete(precomputedEntries.keys().next().value);
+        }
+        updatePrecomputedControls();
+    }
+
+    function isValidPrecomputedIdentity(identity) {
+        return !!identity
+            && identity.algorithmVersion === PRECOMPUTED_ALGORITHM_VERSION
+            && typeof identity.projectFingerprint === 'string'
+            && /^[0-9a-f]{16}$/.test(identity.projectFingerprint)
+            && Number.isFinite(identity.latitude) && identity.latitude >= -90 && identity.latitude <= 90
+            && Number.isFinite(identity.longitude) && identity.longitude >= -180 && identity.longitude <= 180
+            && Utils.isValidTimeZone(identity.timeZone)
+            && Number.isFinite(identity.northAngle)
+            && !!Utils.parseDateParts(identity.date)
+            && Number.isFinite(identity.declination)
+            && Number.isFinite(identity.solarTimeOffset)
+            && identity.timeStep === CONFIG.SUNLIGHT_ANALYSIS.TIME_INTERVAL
+            && identity.startHour === CONFIG.TIME.MIN_HOUR
+            && identity.endHour === CONFIG.TIME.MAX_HOUR;
+    }
+
+    function normalizePrecomputedEntry(entry, currentProjectFingerprint) {
+        if (!entry || !isValidPrecomputedIdentity(entry.identity)) return null;
+        if (entry.identity.projectFingerprint !== currentProjectFingerprint) return null;
+        if (entry.key !== createAnalysisKey(entry.identity)) return null;
+        if (!/^[0-9a-f]{16}$/.test(entry.samplingFingerprint || '')) return null;
+        if (!Number.isInteger(entry.pointCount)
+            || entry.pointCount < 1
+            || entry.pointCount > CONFIG.SUNLIGHT_ANALYSIS.MAX_SAMPLE_POINTS
+            || !Array.isArray(entry.hours)
+            || entry.hours.length !== entry.pointCount) return null;
+        const hours = entry.hours.map(value => Number(value));
+        if (hours.some(value => !Number.isFinite(value) || value < 0 || value > 12.001)) return null;
+        return {
+            key: entry.key,
+            identity: Utils.deepClone(entry.identity),
+            samplingFingerprint: entry.samplingFingerprint,
+            pointCount: entry.pointCount,
+            hours,
+            createdAt: typeof entry.createdAt === 'string' ? entry.createdAt : null
+        };
+    }
+
+    function importPrecomputedPayload(payload) {
+        precomputedEntries = new Map();
+        importedPrecomputedSelection = null;
+        if (payload == null) {
+            updatePrecomputedControls();
+            return 0;
+        }
+        if (!currentData
+            || payload?.schemaVersion !== PRECOMPUTED_SCHEMA_VERSION
+            || payload?.algorithmVersion !== PRECOMPUTED_ALGORITHM_VERSION
+            || !Array.isArray(payload.entries)) {
+            updatePrecomputedControls('viewer.precomputedIgnored');
+            return 0;
+        }
+
+        const projectFingerprint = createAnalysisProjectFingerprint(currentData);
+        payload.entries.slice(0, MAX_PRECOMPUTED_ENTRIES).forEach(rawEntry => {
+            const entry = normalizePrecomputedEntry(rawEntry, projectFingerprint);
+            if (entry) precomputedEntries.set(entry.key, entry);
+        });
+        const activeSelection = payload.activeSelection;
+        const activeEntry = activeSelection && precomputedEntries.get(activeSelection.key);
+        if (activeEntry
+            && ANALYSIS_SEASON_PRESETS.has(activeSelection.seasonPreset)
+            && activeSelection.date === activeEntry.identity.date) {
+            importedPrecomputedSelection = {
+                key: activeEntry.key,
+                seasonPreset: activeSelection.seasonPreset,
+                date: activeEntry.identity.date
+            };
+        }
+        if (precomputedEntries.size === 0) {
+            updatePrecomputedControls('viewer.precomputedIgnored');
+        } else {
+            updatePrecomputedControls();
+        }
+        return precomputedEntries.size;
+    }
+
+    function getActivePrecomputedSelection() {
+        if (!currentData) return null;
+        try {
+            const solarSettings = getAnalysisSolarSettings();
+            const identity = createAnalysisIdentity(currentData, solarSettings);
+            const key = createAnalysisKey(identity);
+            if (!precomputedEntries.has(key)) return null;
+            return {
+                key,
+                seasonPreset: solarSettings.seasonPreset,
+                date: solarSettings.date
+            };
+        } catch (error) {
+            return null;
+        }
+    }
+
+    function buildPrecomputedPayload() {
+        return {
+            schemaVersion: PRECOMPUTED_SCHEMA_VERSION,
+            algorithmVersion: PRECOMPUTED_ALGORITHM_VERSION,
+            activeSelection: getActivePrecomputedSelection(),
+            entries: getCurrentProjectPrecomputedEntries().map(entry => Utils.deepClone(entry))
+        };
+    }
+
+    function restoreImportedPrecomputedSelection() {
+        const selection = importedPrecomputedSelection;
+        importedPrecomputedSelection = null;
+        if (!selection || !precomputedEntries.has(selection.key)) return false;
+
+        const seasonSelect = document.getElementById('seasonSelect');
+        const customDateInput = document.getElementById('customDateInput');
+        const customDatePicker = document.getElementById('customDatePicker');
+        const presetDate = selection.seasonPreset === 'custom'
+            ? null
+            : Utils.getSeasonPresetDate(selection.seasonPreset);
+        const canRestorePreset = presetDate === selection.date;
+
+        seasonSelect.value = canRestorePreset ? selection.seasonPreset : 'custom';
+        customDateInput.value = selection.date;
+        customDatePicker.style.display = canRestorePreset ? 'none' : 'block';
+        return true;
+    }
+
+    function tryApplyPrecomputedForCurrentSelection() {
+        if (!currentData || precomputedEntries.size === 0) return false;
+        try {
+            const analysisData = Utils.deepClone(currentData);
+            const solarSettings = getAnalysisSolarSettings();
+            const identity = createAnalysisIdentity(analysisData, solarSettings);
+            const entry = precomputedEntries.get(createAnalysisKey(identity));
+            if (!entry) {
+                updatePrecomputedControls();
+                return false;
+            }
+
+            const points = collectAnalysisPoints(analysisData);
+            if (points.length !== entry.pointCount
+                || createSamplingFingerprint(points) !== entry.samplingFingerprint) {
+                precomputedEntries.delete(entry.key);
+                updatePrecomputedControls('viewer.precomputedIgnored');
+                return false;
+            }
+            points.forEach((point, index) => {
+                point.sunlightHours = entry.hours[index];
+            });
+            const snapshot = {
+                ...identity,
+                seasonPreset: solarSettings.seasonPreset,
+                referenceHours: getReferenceHours(),
+                samplingFingerprint: entry.samplingFingerprint,
+                source: 'precomputed'
+            };
+            const results = buildSunlightResultsFromPoints(points, snapshot);
+            presentSunlightResults(results, true);
+            updatePrecomputedControls('viewer.precomputedApplied');
+            return true;
+        } catch (error) {
+            console.warn('Precomputed sunlight result was ignored:', error);
+            updatePrecomputedControls();
+            return false;
+        }
     }
 
     function serializeOccluderMeshes(buildingMeshes) {
@@ -1182,21 +1496,16 @@
         try {
             const solarSettings = getAnalysisSolarSettings();
             const analysisData = Utils.deepClone(currentData);
+            const identity = createAnalysisIdentity(analysisData, solarSettings);
             const snapshot = Object.freeze({
-                latitude: LATITUDE,
-                longitude: LONGITUDE,
-                timeZone: TIME_ZONE,
-                northAngle: NORTH_ANGLE,
-                date: solarSettings.date,
-                declination: solarSettings.declination,
-                solarTimeOffset: solarSettings.solarTimeOffset,
+                ...identity,
                 seasonPreset: solarSettings.seasonPreset,
-                timeStep: CONFIG.SUNLIGHT_ANALYSIS.TIME_INTERVAL,
-                referenceHours: getReferenceHours()
+                referenceHours: getReferenceHours(),
+                source: 'calculated'
             });
             const timePoints = Utils.createTimeSamples(
-                CONFIG.TIME.MIN_HOUR,
-                CONFIG.TIME.MAX_HOUR,
+                snapshot.startHour,
+                snapshot.endHour,
                 snapshot.timeStep
             );
             const sunDirections = timePoints.map(hour => calculateSunDirection(
@@ -1206,13 +1515,7 @@
                 snapshot.solarTimeOffset
             ));
 
-            const allPoints = [];
-            const maxPoints = CONFIG.SUNLIGHT_ANALYSIS.MAX_SAMPLE_POINTS;
-            analysisData.buildings.forEach((building, index) => {
-                if (building.isThisCommunity === false) return;
-                const remaining = maxPoints - allPoints.length;
-                allPoints.push(...calculateSamplingPoints(building, index, remaining));
-            });
+            const allPoints = collectAnalysisPoints(analysisData);
 
             if (allPoints.length === 0) {
                 alert(i18n.t('viewer.errorNoBuilding'));
@@ -1262,7 +1565,10 @@
             }
 
             assertAnalysisActive(task);
-            return buildSunlightResultsFromPoints(allPoints, snapshot);
+            return buildSunlightResultsFromPoints(allPoints, {
+                ...snapshot,
+                samplingFingerprint: createSamplingFingerprint(allPoints)
+            });
         } finally {
             if (task.worker) task.worker.terminate();
             task.rejectWorker = null;
@@ -1436,6 +1742,17 @@
         requestRender();
     }
 
+    function presentSunlightResults(results, fromPrecomputed = false) {
+        if (!results) return;
+        sunlightResults = results;
+        document.getElementById('toggleHeatmap').disabled = false;
+        document.getElementById('heatmapLegend').style.display = 'block';
+        showSunlightStats(results);
+        document.getElementById('toggleHeatmap').checked = true;
+        toggleHeatmap(true);
+        if (!fromPrecomputed) cacheSunlightResult(results);
+    }
+
     // ========== 城市/位置选择器初始化 ==========
     function initLocationSelector() {
         const citySelect = document.getElementById('citySelect');
@@ -1469,6 +1786,7 @@
             clearSunlightResults();
             syncLocationControls({ latitude, longitude, timeZone });
             updateSun();
+            tryApplyPrecomputedForCurrentSelection();
         }
 
         citySelect.addEventListener('change', function() {
@@ -1499,6 +1817,8 @@
             if (rawData) {
                 clearSunlightResults();
                 rebuildProjectScene();
+                updateSun();
+                tryApplyPrecomputedForCurrentSelection();
             }
         });
 
@@ -1555,39 +1875,136 @@
         return Utils.normalizeBuildingData(data, getBuildingSchemaOptions());
     }
 
-    jsonInput.addEventListener('change', (e) => {
-        const file = e.target.files[0];
-        if (!file) return;
-        const reader = new FileReader();
-        reader.onload = (ev) => {
-            try {
-                const parsedData = JSON.parse(ev.target.result);
-                const normalized = normalizeImportedData(parsedData);
-                if (!normalized.valid) {
-                    alert(i18n.t('viewer.errorInvalidData').replace('{0}', normalized.errors.slice(0, 8).join('\n')));
-                    console.warn('Invalid building data:', normalized.errors);
-                    return;
-                }
-                if (normalized.warnings.length) console.warn('Building data normalized:', normalized.warnings);
+    function applyImportedProject(parsedData, normalized) {
+        if (normalized.warnings.length) console.warn('Building data normalized:', normalized.warnings);
+        clearSunlightResults();
+        rawData = normalized.data;
+        syncLocationControls(rawData);
+        NORTH_ANGLE = rawData.northAngle;
+        document.getElementById('northAngleInput').value = NORTH_ANGLE;
+        updateNorthAngleDisplay();
+        rebuildProjectScene();
+        importPrecomputedPayload(parsedData?.precomputedSunlight);
+        restoreImportedPrecomputedSelection();
+        updateSun();
+        tryApplyPrecomputedForCurrentSelection();
+        document.getElementById('empty-state').style.display = 'none';
+    }
 
-                clearSunlightResults();
-                rawData = normalized.data;
-                syncLocationControls(rawData);
-                NORTH_ANGLE = rawData.northAngle;
-                document.getElementById('northAngleInput').value = NORTH_ANGLE;
-                updateNorthAngleDisplay();
-                rebuildProjectScene();
-                updateSun();
-                document.getElementById('empty-state').style.display = 'none';
-            } catch (err) {
-                alert(i18n.t('viewer.errorParseFailed'));
-                console.error(err);
+    function isJsonFile(file) {
+        const name = String(file?.name || '').toLowerCase();
+        return !!file && (name.endsWith('.json') || file.type === 'application/json' || file.type === 'text/json');
+    }
+
+    async function importProjectFile(file) {
+        if (!isJsonFile(file)) {
+            alert(i18n.t('viewer.errorInvalidJsonFile'));
+            return false;
+        }
+
+        setLoadingOverlayVisible(true);
+        try {
+            await waitForNextPaint();
+            const parsedData = JSON.parse(await file.text());
+            const normalized = normalizeImportedData(parsedData);
+            if (!normalized.valid) {
+                setLoadingOverlayVisible(false);
+                alert(i18n.t('viewer.errorInvalidData').replace('{0}', normalized.errors.slice(0, 8).join('\n')));
+                console.warn('Invalid building data:', normalized.errors);
+                return false;
             }
-        };
-        reader.onerror = () => {
-            alert(i18n.t('viewer.errorFileRead'));
-        };
-        reader.readAsText(file);
+            await waitForNextPaint();
+            applyImportedProject(parsedData, normalized);
+            await waitForNextPaint();
+            return true;
+        } catch (error) {
+            setLoadingOverlayVisible(false);
+            alert(error instanceof SyntaxError ? i18n.t('viewer.errorParseFailed') : i18n.t('viewer.errorFileRead'));
+            console.error(error);
+            return false;
+        } finally {
+            setLoadingOverlayVisible(false);
+        }
+    }
+
+    async function saveJsonWithDialog(content, filename) {
+        const blob = new Blob([content], { type: 'application/json' });
+        if (typeof window.showSaveFilePicker === 'function') {
+            try {
+                const handle = await window.showSaveFilePicker({
+                    suggestedName: filename,
+                    types: [{ description: 'JSON', accept: { 'application/json': ['.json'] } }]
+                });
+                const writable = await handle.createWritable();
+                await writable.write(blob);
+                await writable.close();
+                return true;
+            } catch (error) {
+                if (error?.name === 'AbortError') return false;
+                if (error?.name !== 'SecurityError') throw error;
+            }
+        }
+        Utils.downloadFile(content, filename, 'application/json');
+        return true;
+    }
+
+    async function exportProjectWithPrecomputedResults() {
+        if (!rawData || getCurrentProjectPrecomputedEntries().length === 0) return;
+        try {
+            const exportBase = {
+                ...Utils.deepClone(rawData),
+                version: CONFIG.APP.VERSION,
+                latitude: LATITUDE,
+                longitude: LONGITUDE,
+                timeZone: TIME_ZONE,
+                northAngle: NORTH_ANGLE
+            };
+            const normalized = normalizeImportedData(exportBase);
+            if (!normalized.valid) throw new Error(normalized.errors.join('\n'));
+            const exportData = {
+                ...normalized.data,
+                precomputedSunlight: buildPrecomputedPayload()
+            };
+            const saved = await saveJsonWithDialog(
+                JSON.stringify(exportData, null, 2),
+                'sunlight_project_with_results.json'
+            );
+            if (saved) updatePrecomputedControls('viewer.exportAnalysisComplete');
+        } catch (error) {
+            console.error('Failed to export precomputed project:', error);
+            alert(i18n.t('viewer.errorExportFailed'));
+        }
+    }
+
+    jsonInput.addEventListener('change', async event => {
+        const file = event.target.files[0];
+        if (file) await importProjectFile(file);
+        event.target.value = '';
+    });
+
+    window.addEventListener('dragenter', event => {
+        if (!event.dataTransfer?.types?.includes('Files')) return;
+        event.preventDefault();
+        importDragDepth++;
+        setDropOverlayVisible(true);
+    });
+    window.addEventListener('dragover', event => {
+        if (!event.dataTransfer?.types?.includes('Files')) return;
+        event.preventDefault();
+        event.dataTransfer.dropEffect = 'copy';
+    });
+    window.addEventListener('dragleave', event => {
+        if (!event.dataTransfer?.types?.includes('Files')) return;
+        importDragDepth = Math.max(0, importDragDepth - 1);
+        if (importDragDepth === 0) setDropOverlayVisible(false);
+    });
+    window.addEventListener('drop', async event => {
+        if (!event.dataTransfer) return;
+        event.preventDefault();
+        importDragDepth = 0;
+        setDropOverlayVisible(false);
+        const file = Array.from(event.dataTransfer.files || [])[0];
+        if (file) await importProjectFile(file);
     });
 
     function clearGroup(group) {
@@ -1985,14 +2402,16 @@
                 customDatePicker.style.display = 'none';
             }
             
-            updateSun();
             clearSunlightResults();
+            updateSun();
+            tryApplyPrecomputedForCurrentSelection();
         });
         
         // 自定义日期变化
         customDateInput.addEventListener('change', () => {
-            updateSun();
             clearSunlightResults();
+            updateSun();
+            tryApplyPrecomputedForCurrentSelection();
         });
 
         document.getElementById('timeSlider').addEventListener('input', (e) => {
@@ -2013,11 +2432,12 @@
         referenceHoursInput.addEventListener('change', () => {
             referenceHoursInput.value = getReferenceHours();
             clearSunlightResults();
+            tryApplyPrecomputedForCurrentSelection();
         });
 
         document.getElementById('toggleOwnOnly').addEventListener('change', (e) => {
             showOwnOnly = !!e.target.checked;
-            applyVisibilityFilter(true);
+            applyVisibilityFilter(false);
         });
 
         // 日照分析按钮
@@ -2045,15 +2465,8 @@
                 });
 
                 if (results) {
-                    sunlightResults = results;
                     progressText.textContent = i18n.t('viewer.calculationComplete');
-                    document.getElementById('toggleHeatmap').disabled = false;
-                    document.getElementById('heatmapLegend').style.display = 'block';
-                    showSunlightStats(sunlightResults);
-
-                    // 自动显示热力图
-                    document.getElementById('toggleHeatmap').checked = true;
-                    toggleHeatmap(true);
+                    presentSunlightResults(results);
                 }
             } catch (err) {
                 if (err?.name === 'AnalysisCancelledError') {
@@ -2083,6 +2496,8 @@
             cancelActiveAnalysis();
             document.getElementById('progressText').textContent = i18n.t('viewer.calculationCancelled');
         });
+
+        exportAnalysisButton.addEventListener('click', exportProjectWithPrecomputedResults);
 
         // 热力图开关
         document.getElementById('toggleHeatmap').addEventListener('change', (e) => {
@@ -2158,20 +2573,13 @@
         console.log('检测到默认数据，正在加载...');
         const normalized = normalizeImportedData(DEFAULT_DATA);
         if (normalized.valid) {
-            if (normalized.warnings.length) console.warn('Default data normalized:', normalized.warnings);
-            rawData = normalized.data;
-            syncLocationControls(rawData);
-            NORTH_ANGLE = rawData.northAngle;
-            document.getElementById('northAngleInput').value = NORTH_ANGLE;
-            updateNorthAngleDisplay();
-            rebuildProjectScene();
-            updateSun();
-            document.getElementById('empty-state').style.display = 'none';
+            applyImportedProject(DEFAULT_DATA, normalized);
         } else {
             console.error('默认数据无效:', normalized.errors);
         }
     } else {
         console.log('未检测到 DEFAULT_DATA 变量，等待手动上传文件');
+        updatePrecomputedControls();
     }
 
     // ========== 语言切换功能 ==========
@@ -2264,6 +2672,7 @@
         if (currentUnitInfoData && document.getElementById('unitInfoPanel').style.display !== 'none') {
             showUnitInfo(currentUnitInfoData);
         }
+        updatePrecomputedControls();
     }
 
     function updateLatDisplay() {

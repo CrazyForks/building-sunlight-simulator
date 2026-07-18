@@ -49,6 +49,8 @@ const i18n = (function() {
                 // 控制面板
                 step1: '1. 导入数据',
                 selectJson: '📂 选择 JSON 文件',
+                dropJsonHint: '松开以导入项目 JSON',
+                importLoading: '正在加载项目...',
 
                 step2: '2. 项目位置',
                 selectCity: '选择城市',
@@ -81,6 +83,11 @@ const i18n = (function() {
                 calculating: '计算中...',
                 showHeatmap: '显示日照热力图',
                 referenceHours: '参考时长（小时）',
+                exportAnalysisButton: '⇩ 导出项目与结果',
+                precomputedReady: '已缓存 {0} 个可复用分析结果',
+                precomputedApplied: '已使用项目内的预计算结果',
+                precomputedIgnored: '项目中的预计算结果与当前模型不匹配，已忽略',
+                exportAnalysisComplete: '项目与预计算结果已导出',
                 
                 // 热力图图例
                 legendHours: ['0h', '4h', '8h'],
@@ -128,6 +135,8 @@ const i18n = (function() {
                 errorTooComplex: '模型过于复杂，采样点或计算步数超过安全上限',
                 errorCalcFailed: '计算过程中出错，请重试',
                 errorFileRead: '文件读取失败，请重试',
+                errorInvalidJsonFile: '请选择或拖入 JSON 文件',
+                errorExportFailed: '导出项目结果失败，请重试',
 
                 // 计算进度
                 calculatingProgress: '计算中... {0}%',
@@ -151,6 +160,9 @@ const i18n = (function() {
                 // 步骤1
                 step1Title: '1. 上传规划图/总平图',
                 step1Hint: '支持拖拽、缩放、绘制多边形表示楼栋轮廓。',
+                importProjectButton: '导入项目 JSON',
+                importLoading: '正在加载项目...',
+                dragDropLabel: '拖入图片更换底图；拖入 JSON 继续编辑项目',
                 
                 // 步骤2
                 step2Title: '2. 标定比例尺',
@@ -169,6 +181,7 @@ const i18n = (function() {
                 modeIdle: '当前: ✋ 浏览模式',
                 modeDrawing: '当前: ✏️ 正在绘制 (双击结束 / 右键撤销)',
                 undoPoint: '↶ 撤销点',
+                undoEdit: '↶ 撤销编辑',
                 finishPolygon: '✓ 完成轮廓',
                 resetView: '⟲ 重置视角',
                 
@@ -201,6 +214,7 @@ const i18n = (function() {
                 tableIsOwn: '本小区',
                 tableActions: '操作',
                 tableDelete: '删除',
+                tableVisualSplit: '可视化编辑',
                 namePlaceholder: '输入名称（如：1号楼/配建/幼儿园）',
                 splitConfigTitle: '分户配置',
                 splitAngle: '分户轴角度',
@@ -215,6 +229,12 @@ const i18n = (function() {
                 splitRatiosErrorLineCount: '分户比例需填写 1 行或与层数一致',
                 splitRatiosErrorValueCount: '每行分户比例数量必须等于户/层',
                 splitRatiosErrorNumber: '分户比例必须为非负数字，且总和大于 0',
+                visualSplitTitle: '可视化分户',
+                visualSplitFloor: '楼层',
+                visualSplitFloorOption: '第 {0} 层',
+                visualSplitUnitRatio: '第 {0} 户 (%)',
+                visualSplitEqualize: '当前层等分',
+                visualSplitApplyAll: '应用到全部楼层',
                 
                 // 导出
                 exportButton: '导出 JSON 配置',
@@ -227,7 +247,10 @@ const i18n = (function() {
                 alertInvalidDistance: '请输入正确的实际距离，并确保两点不重合。',
                 alertConfirmDelete: '确定删除该楼栋吗？',
                 alertConfirmReplaceImage: '加载新底图会清除当前楼栋、比例尺和未完成轮廓，是否继续？',
+                alertConfirmReplaceProject: '导入项目会替换当前楼栋、比例尺和未完成轮廓，是否继续？',
                 alertInvalidLocation: '请输入有效的经度、纬度和 IANA 时区。',
+                alertInvalidDropFile: '不支持的文件类型，请拖入 JSON 或图片文件。',
+                alertImportProjectFailed: '项目导入失败，请检查 JSON 数据。',
                 
                 // 缩放信息
                 zoomInfo: '缩放'
@@ -267,6 +290,8 @@ const i18n = (function() {
                 // Control panel
                 step1: '1. Import Data',
                 selectJson: '📂 Select JSON File',
+                dropJsonHint: 'Drop to import the project JSON',
+                importLoading: 'Loading project...',
 
                 step2: '2. Project Location',
                 selectCity: 'Select City',
@@ -299,6 +324,11 @@ const i18n = (function() {
                 calculating: 'Calculating...',
                 showHeatmap: 'Show Sunlight Heatmap',
                 referenceHours: 'Reference Duration (hours)',
+                exportAnalysisButton: '⇩ Export Project and Results',
+                precomputedReady: '{0} reusable analysis result(s) cached',
+                precomputedApplied: 'Using a precomputed result from this project',
+                precomputedIgnored: 'Precomputed results do not match the current model and were ignored',
+                exportAnalysisComplete: 'Project and precomputed results exported',
                 
                 // Heatmap legend
                 legendHours: ['0h', '4h', '8h'],
@@ -346,6 +376,8 @@ const i18n = (function() {
                 errorTooComplex: 'The model exceeds the safe sampling or calculation limit',
                 errorCalcFailed: 'Error during calculation, please try again',
                 errorFileRead: 'File read failed, please try again',
+                errorInvalidJsonFile: 'Select or drop a JSON file',
+                errorExportFailed: 'Failed to export project results',
 
                 // Calculation progress
                 calculatingProgress: 'Calculating... {0}%',
@@ -369,6 +401,9 @@ const i18n = (function() {
                 // Step 1
                 step1Title: '1. Upload Plan/Site Plan',
                 step1Hint: 'Supports drag, zoom, and draw polygons to represent building outlines.',
+                importProjectButton: 'Import Project JSON',
+                importLoading: 'Loading project...',
+                dragDropLabel: 'Drop an image to replace the plan; drop JSON to continue editing a project',
                 
                 // Step 2
                 step2Title: '2. Calibrate Scale',
@@ -387,6 +422,7 @@ const i18n = (function() {
                 modeIdle: 'Current: ✋ Browse Mode',
                 modeDrawing: 'Current: ✏️ Drawing (Double-click to finish / Right-click to undo)',
                 undoPoint: '↶ Undo Point',
+                undoEdit: '↶ Undo Edit',
                 finishPolygon: '✓ Finish Outline',
                 resetView: '⟲ Reset View',
                 
@@ -419,6 +455,7 @@ const i18n = (function() {
                 tableIsOwn: 'This Community',
                 tableActions: 'Actions',
                 tableDelete: 'Delete',
+                tableVisualSplit: 'Visual Editor',
                 namePlaceholder: 'Enter name (e.g., Building 1/Ancillary/Kindergarten)',
                 splitConfigTitle: 'Unit Split',
                 splitAngle: 'Split Axis Angle',
@@ -433,6 +470,12 @@ const i18n = (function() {
                 splitRatiosErrorLineCount: 'Split ratios must contain either 1 line or exactly one line per floor',
                 splitRatiosErrorValueCount: 'Each split-ratio line must contain exactly Units/Floor values',
                 splitRatiosErrorNumber: 'Split ratios must be non-negative numbers with a positive sum',
+                visualSplitTitle: 'Visual Unit Split',
+                visualSplitFloor: 'Floor',
+                visualSplitFloorOption: 'Floor {0}',
+                visualSplitUnitRatio: 'Unit {0} (%)',
+                visualSplitEqualize: 'Equalize Current Floor',
+                visualSplitApplyAll: 'Apply to All Floors',
                 
                 // Export
                 exportButton: 'Export JSON Configuration',
@@ -445,7 +488,10 @@ const i18n = (function() {
                 alertInvalidDistance: 'Please enter a valid actual distance and ensure the two points are not coincident.',
                 alertConfirmDelete: 'Are you sure you want to delete this building?',
                 alertConfirmReplaceImage: 'Loading a new plan will clear buildings, scale calibration, and the unfinished outline. Continue?',
+                alertConfirmReplaceProject: 'Importing a project will replace buildings, scale calibration, and the unfinished outline. Continue?',
                 alertInvalidLocation: 'Enter valid coordinates and an IANA time zone.',
+                alertInvalidDropFile: 'Unsupported file type. Drop a JSON or image file.',
+                alertImportProjectFailed: 'Project import failed. Check the JSON data.',
                 
                 // Zoom info
                 zoomInfo: 'Zoom'

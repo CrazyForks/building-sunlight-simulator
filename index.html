@@ -9,6 +9,17 @@
 <body>
     <div id="empty-state" data-i18n="viewer.emptyState">请在右上角导入 JSON 配置文件</div>
 
+    <div id="loadingOverlay" class="loading-overlay" aria-hidden="true">
+        <div class="loading-panel" role="status" aria-live="polite">
+            <div class="loading-spinner" aria-hidden="true"></div>
+            <span id="loadingText" data-i18n="viewer.importLoading">正在加载项目...</span>
+        </div>
+    </div>
+
+    <div id="dropOverlay" class="drop-overlay" aria-hidden="true">
+        <div class="drop-target" data-i18n="viewer.dropJsonHint">松开以导入项目 JSON</div>
+    </div>
+
     <!-- GitHub 图标链接 -->
     <a href="https://github.com/SeanWong17/building-sunlight-simulator" target="_blank" rel="noopener noreferrer" class="github-link" title="View on GitHub" aria-label="View source on GitHub">
         <svg width="32" height="32" viewBox="0 0 16 16" fill="currentColor">
@@ -134,6 +145,8 @@
                         </div>
                     </div>
                     <div id="sunlightStats" class="sunlight-stats" style="display:none;"></div>
+                    <button id="exportAnalysisBtn" class="export-analysis-btn" type="button" disabled data-i18n="viewer.exportAnalysisButton">⇩ 导出项目与结果</button>
+                    <div id="precomputedStatus" class="precomputed-status" aria-live="polite"></div>
                 </div>
             </div>
 

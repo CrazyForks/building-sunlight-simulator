@@ -48,6 +48,26 @@ test('creates exactly 120 midpoint samples for the 06:00-18:00 range', () => {
     assert.equal(samples.length * 0.1, 12);
 });
 
+test('creates stable fingerprints independent of object key order', () => {
+    const first = {
+        buildings: [{ shape: [{ x: 1, y: 2 }], floors: 2 }],
+        location: { longitude: 117.12, latitude: 36.65 }
+    };
+    const reordered = {
+        location: { latitude: 36.65, longitude: 117.12 },
+        buildings: [{ floors: 2, shape: [{ y: 2, x: 1 }] }]
+    };
+    const changed = {
+        ...reordered,
+        buildings: [{ floors: 3, shape: [{ y: 2, x: 1 }] }]
+    };
+
+    assert.equal(Utils.stableSerialize(first), Utils.stableSerialize(reordered));
+    assert.equal(Utils.createFingerprint(first), Utils.createFingerprint(reordered));
+    assert.notEqual(Utils.createFingerprint(first), Utils.createFingerprint(changed));
+    assert.throws(() => Utils.createFingerprint({ value: Infinity }), /non-finite/);
+});
+
 test('occlusion budget scales with both mesh count and triangle complexity', () => {
     assert.equal(Utils.estimateOcclusionWork(1000, [12, 24], 12), 3000);
     assert.equal(Utils.estimateOcclusionWork(100000, new Array(500).fill(12), 12), 50000000);

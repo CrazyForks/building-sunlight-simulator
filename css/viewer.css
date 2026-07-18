@@ -506,6 +506,109 @@ h2 {
     pointer-events: none;
 }
 
+.loading-overlay,
+.drop-overlay {
+    position: fixed;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
+    transition: opacity 0.16s ease, visibility 0.16s ease;
+}
+
+.loading-overlay {
+    z-index: 60;
+    background: rgba(12, 24, 38, 0.42);
+}
+
+.drop-overlay {
+    z-index: 55;
+    background: rgba(15, 57, 74, 0.45);
+}
+
+.loading-overlay.is-active,
+.drop-overlay.is-active {
+    opacity: 1;
+    visibility: visible;
+}
+
+.loading-overlay.is-active {
+    pointer-events: all;
+}
+
+.loading-panel,
+.drop-target {
+    width: min(420px, calc(100vw - 40px));
+    border-radius: 8px;
+    text-align: center;
+}
+
+.loading-panel {
+    padding: 18px 20px;
+    background: rgba(255, 255, 255, 0.98);
+    color: #23313f;
+    border: 1px solid rgba(255, 255, 255, 0.75);
+    box-shadow: 0 16px 40px rgba(0, 0, 0, 0.2);
+    font-size: 14px;
+    font-weight: 600;
+}
+
+.loading-spinner {
+    width: 34px;
+    height: 34px;
+    margin: 0 auto 12px;
+    border: 3px solid #d8e2ea;
+    border-top-color: #1976d2;
+    border-radius: 50%;
+    animation: viewer-loading-spin 0.8s linear infinite;
+}
+
+.drop-target {
+    padding: 26px;
+    border: 2px dashed rgba(255, 255, 255, 0.9);
+    background: rgba(20, 42, 54, 0.82);
+    color: #fff;
+    font-size: 18px;
+    font-weight: 700;
+}
+
+@keyframes viewer-loading-spin {
+    to { transform: rotate(360deg); }
+}
+
+.export-analysis-btn {
+    width: 100%;
+    margin-top: 10px;
+    padding: 9px 12px;
+    border: 1px solid #5f6f7d;
+    border-radius: 6px;
+    background: #fff;
+    color: #324453;
+    font-weight: 700;
+    cursor: pointer;
+}
+
+.export-analysis-btn:hover:not(:disabled) {
+    background: #eef4f7;
+}
+
+.export-analysis-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.precomputed-status {
+    min-height: 16px;
+    margin-top: 6px;
+    color: #526575;
+    font-size: 11px;
+    line-height: 1.45;
+}
+
 /* GitHub 图标链接 */
 .github-link {
     position: absolute;

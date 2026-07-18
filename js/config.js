@@ -67,7 +67,10 @@ const CONFIG = (function() {
             MAX_RAY_STEPS: 2400000,    // 单次分析最大 点×时刻 数
             MAX_OCCLUSION_WORK: 50000000, // 最大 射线×等效简单楼栋 数
             REFERENCE_TRIANGLES_PER_MESH: 12, // 一个等效简单楼栋的三角形数
-            MAIN_THREAD_BATCH_SIZE: 240// Worker 不可用时每批计算步数
+            MAIN_THREAD_BATCH_SIZE: 240,// Worker 不可用时每批计算步数
+            PRECOMPUTED_SCHEMA_VERSION: 1,
+            PRECOMPUTED_ALGORITHM_VERSION: '3.1.0-1',
+            MAX_PRECOMPUTED_ENTRIES: 24
         },
 
         // 3D 场景配置

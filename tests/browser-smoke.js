@@ -78,12 +78,49 @@ function projectJson(overrides = {}) {
     });
 }
 
+async function waitForLoadingCycle(page, selector) {
+    await page.waitForFunction(
+        selector => document.querySelector(selector)?.classList.contains('is-active'),
+        selector
+    );
+    await page.waitForFunction(
+        selector => {
+            const overlay = document.querySelector(selector);
+            if (!overlay || overlay.classList.contains('is-active')) return false;
+            const style = getComputedStyle(overlay);
+            return style.visibility === 'hidden' && Number.parseFloat(style.opacity) <= 0.01;
+        },
+        selector
+    );
+}
+
 async function uploadJson(page, content, name = 'project.json') {
     await page.locator('#jsonInput').setInputFiles({
         name,
         mimeType: 'application/json',
         buffer: Buffer.from(content)
     });
+    await waitForLoadingCycle(page, '#loadingOverlay');
+}
+
+async function dropFile(page, selector, { name, mimeType, content }) {
+    await page.evaluate(({ selector, name, mimeType, content }) => {
+        const target = document.querySelector(selector);
+        const transfer = new DataTransfer();
+        transfer.items.add(new File([content], name, { type: mimeType }));
+        const dispatch = type => target.dispatchEvent(new DragEvent(type, {
+            bubbles: true,
+            cancelable: true,
+            dataTransfer: transfer
+        }));
+        dispatch('dragenter');
+        dispatch('dragover');
+        dispatch('drop');
+    }, { selector, name, mimeType, content });
+    const loadingSelector = await page.locator('#loadingOverlay').count()
+        ? '#loadingOverlay'
+        : '#editorLoadingOverlay';
+    await waitForLoadingCycle(page, loadingSelector);
 }
 
 async function calculateAverageHours(page, useWorker = true) {
@@ -188,7 +225,7 @@ async function testViewer(browser) {
     await page.locator('#citySelect').selectOption('济南');
 
     const invalidDialogPromise = page.waitForEvent('dialog');
-    await uploadJson(page, projectJson({
+    const invalidUploadPromise = uploadJson(page, projectJson({
         buildings: [{
             name: 'Crossing',
             floors: 1,
@@ -200,10 +237,11 @@ async function testViewer(browser) {
     const invalidDialogEvent = await invalidDialogPromise;
     const invalidDialog = invalidDialogEvent.message();
     await invalidDialogEvent.accept();
+    await invalidUploadPromise;
     assert.match(invalidDialog, /无效|Invalid/);
 
     const invalidHeightDialogPromise = page.waitForEvent('dialog');
-    await uploadJson(page, projectJson({
+    const invalidHeightUploadPromise = uploadJson(page, projectJson({
         buildings: [{
             name: 'Invalid Height',
             floors: 2,
@@ -216,6 +254,7 @@ async function testViewer(browser) {
     const invalidHeightDialog = await invalidHeightDialogPromise;
     assert.match(invalidHeightDialog.message(), /无效|Invalid/);
     await invalidHeightDialog.accept();
+    await invalidHeightUploadPromise;
 
     await page.evaluate(() => {
         window.__heatmapConstruction = { planeGeometries: 0, instancedMeshes: 0, instanceCapacity: 0 };
@@ -316,6 +355,88 @@ async function testViewer(browser) {
     assert.ok(clearWorkerHours > 0, `Expected positive clear-sky hours, got ${clearWorkerHours}`);
     assert.equal(clearWorkerHours, clearMainHours);
 
+    await uploadJson(page, projectJson(), 'precomputed-custom-date.json');
+    await page.locator('#seasonSelect').selectOption('custom');
+    await page.locator('#customDateInput').fill('2026-05-15');
+    await page.locator('#customDateInput').dispatchEvent('change');
+    const precomputedHours = await calculateAverageHours(page, true);
+    console.log('Viewer: exporting precomputed result');
+
+    await page.evaluate(() => {
+        try {
+            Object.defineProperty(window, 'showSaveFilePicker', { value: undefined, configurable: true });
+        } catch (error) {
+            window.showSaveFilePicker = undefined;
+        }
+    });
+    assert.equal(await page.locator('#exportAnalysisBtn').isEnabled(), true);
+    const analysisDownloadPromise = page.waitForEvent('download');
+    await page.locator('#exportAnalysisBtn').click();
+    const analysisDownload = await analysisDownloadPromise;
+    const precomputedProjectText = fs.readFileSync(await analysisDownload.path(), 'utf8');
+    const precomputedProject = JSON.parse(precomputedProjectText);
+    console.log('Viewer: importing precomputed result');
+    assert.equal(precomputedProject.precomputedSunlight.schemaVersion, 1);
+    assert.match(precomputedProject.precomputedSunlight.algorithmVersion, /^3\.1\.0-/);
+    assert.equal(precomputedProject.precomputedSunlight.entries.length, 1);
+    const precomputedEntry = precomputedProject.precomputedSunlight.entries[0];
+    assert.equal(precomputedEntry.hours.length, precomputedEntry.pointCount);
+    assert.equal(precomputedEntry.identity.date, '2026-05-15');
+    assert.match(precomputedEntry.identity.projectFingerprint, /^[0-9a-f]{16}$/);
+    assert.match(precomputedEntry.samplingFingerprint, /^[0-9a-f]{16}$/);
+    assert.deepEqual(precomputedProject.precomputedSunlight.activeSelection, {
+        key: precomputedEntry.key,
+        seasonPreset: 'custom',
+        date: precomputedEntry.identity.date
+    });
+
+    await page.locator('#seasonSelect').selectOption('december-solstice');
+    assert.equal(await page.locator('#toggleHeatmap').isDisabled(), true);
+    await uploadJson(page, precomputedProjectText, 'precomputed-project.json');
+    assert.equal(await page.locator('#seasonSelect').inputValue(), 'custom');
+    assert.equal(await page.locator('#customDateInput').inputValue(), '2026-05-15');
+    assert.equal(await page.locator('#customDatePicker').isVisible(), true);
+    assert.equal(await page.locator('#toggleHeatmap').isEnabled(), true);
+    assert.match(await page.locator('#precomputedStatus').textContent(), /预计算|precomputed/i);
+    const importedAverage = Number.parseFloat(await page.locator('#sunlightStats .stats-section')
+        .first().locator('.stat-row').nth(2).locator('.stat-value').textContent());
+    assert.equal(importedAverage, precomputedHours);
+
+    await page.locator('#referenceHoursInput').fill('3.5');
+    await page.locator('#referenceHoursInput').dispatchEvent('change');
+    assert.equal(await page.locator('#toggleHeatmap').isEnabled(), true);
+    assert.match(await page.locator('#sunlightStats').textContent(), /3\.5h/);
+
+    await page.locator('#northAngleInput').fill('15');
+    await page.locator('#northAngleInput').dispatchEvent('change');
+    assert.equal(await page.locator('#toggleHeatmap').isDisabled(), true);
+    assert.equal(await page.locator('#exportAnalysisBtn').isDisabled(), true);
+    await page.locator('#northAngleInput').fill('0');
+    await page.locator('#northAngleInput').dispatchEvent('change');
+    assert.equal(await page.locator('#toggleHeatmap').isEnabled(), true);
+    assert.equal(await page.locator('#exportAnalysisBtn').isEnabled(), true);
+
+    const staleSamplingProject = JSON.parse(precomputedProjectText);
+    staleSamplingProject.precomputedSunlight.entries[0].samplingFingerprint = '0000000000000000';
+    await uploadJson(page, JSON.stringify(staleSamplingProject), 'stale-sampling-project.json');
+    assert.equal(await page.locator('#toggleHeatmap').isDisabled(), true);
+    assert.match(await page.locator('#precomputedStatus').textContent(), /不匹配|ignored/i);
+
+    const staleProject = JSON.parse(precomputedProjectText);
+    staleProject.buildings[0].shape[0].x += 0.5;
+    await uploadJson(page, JSON.stringify(staleProject), 'stale-precomputed-project.json');
+    assert.equal(await page.locator('#toggleHeatmap').isDisabled(), true);
+    assert.match(await page.locator('#precomputedStatus').textContent(), /不匹配|ignored/i);
+
+    await dropFile(page, 'body', {
+        name: 'dropped-precomputed-project.json',
+        mimeType: 'application/json',
+        content: precomputedProjectText
+    });
+    assert.equal(await page.locator('#toggleHeatmap').isEnabled(), true);
+    console.log('Viewer: precomputed result workflow passed');
+
+    await page.locator('#seasonSelect').selectOption('december-solstice');
     const partialOcclusionProject = JSON.parse(projectJson());
     partialOcclusionProject.buildings.push({
         name: 'Partial Occluder',
@@ -375,6 +496,7 @@ async function testViewer(browser) {
     assert.equal(distantMainHours, 0);
 
     await uploadJson(page, projectJson(), 'small.json');
+    console.log('Viewer: performance and cancellation checks');
     await page.waitForTimeout(200);
 
     await page.evaluate(() => {
@@ -537,6 +659,25 @@ async function testEditor(browser) {
     await page.locator('#btnFinishPolygon').click();
     await page.waitForFunction(() => document.querySelectorAll('#tableBody tr').length >= 2);
 
+    await page.locator('.split-config-header .btn-mini').click();
+    assert.equal(await page.locator('#splitEditorModal').isVisible(), true);
+    await page.locator('#visualSplitAngleNumber').fill('45');
+    await page.locator('#visualSplitAngleNumber').dispatchEvent('change');
+    const visualRatioInputs = page.locator('#visualSplitInputs input');
+    assert.equal(await visualRatioInputs.count(), 2);
+    await page.locator('.visual-split-handle').first().focus();
+    await page.locator('.visual-split-handle').first().press('ArrowRight');
+    assert.equal(await page.evaluate(() => document.activeElement?.classList.contains('visual-split-handle')), true);
+    await visualRatioInputs.first().fill('30');
+    assert.equal(await visualRatioInputs.first().inputValue(), '30');
+    await visualRatioInputs.first().press('Tab');
+    assert.match(await page.locator('#visualSplitBar').textContent(), /30\.0%.*70\.0%/);
+    await page.locator('#btnApplySplitAllFloors').click();
+    await page.locator('#btnSaveSplitEditor').click();
+    assert.equal(await page.locator('#splitEditorModal').isHidden(), true);
+    assert.equal(await page.locator('.split-config-grid input[type="number"]').first().inputValue(), '45');
+    assert.match(await page.locator('.split-config-grid textarea').inputValue(), /0\.3.*0\.7/);
+
     const downloadPromise = page.waitForEvent('download');
     await page.locator('#btnExport').click();
     const download = await downloadPromise;
@@ -545,6 +686,31 @@ async function testEditor(browser) {
     assert.equal(exported.timeZone, 'Asia/Shanghai');
     assert.equal(exported.buildings.length, 1);
     assert.equal(exported.buildings[0].isThisCommunity, true);
+    assert.equal(exported.buildings[0].unitSplitAngleDeg, 45);
+    assert.deepEqual(exported.buildings[0].unitRatiosPerFloor, [[0.3, 0.7]]);
+
+    await page.locator('#btnDrawMode').click();
+    box = await canvas.boundingBox();
+    const dragStart = { x: box.x + box.width * 0.5, y: box.y + box.height * 0.5 };
+    await page.mouse.move(dragStart.x, dragStart.y);
+    await page.mouse.down();
+    await page.mouse.move(dragStart.x + 45, dragStart.y + 20);
+    await page.mouse.up();
+    assert.equal(await page.locator('#tableBody tr.building-row.is-selected').count(), 1);
+    assert.equal(await page.locator('#btnUndoEdit').isEnabled(), true);
+
+    const movedDownloadPromise = page.waitForEvent('download');
+    await page.locator('#btnExport').click();
+    const movedExport = JSON.parse(fs.readFileSync(await (await movedDownloadPromise).path(), 'utf8'));
+    assert.notDeepEqual(movedExport.origin, exported.origin);
+
+    await page.locator('#btnUndoEdit').click();
+    const restoredDownloadPromise = page.waitForEvent('download');
+    await page.locator('#btnExport').click();
+    const restoredExportText = fs.readFileSync(await (await restoredDownloadPromise).path(), 'utf8');
+    const restoredExport = JSON.parse(restoredExportText);
+    assert.deepEqual(restoredExport.origin, exported.origin);
+    assert.deepEqual(restoredExport.buildings[0].shape, exported.buildings[0].shape);
 
     await page.mouse.click(box.x + box.width * 0.45, box.y + box.height * 0.45);
 
@@ -566,6 +732,106 @@ async function testEditor(browser) {
     assert.equal(await page.locator('#tableBody tr').count(), 0);
     assert.equal(await page.locator('#scaleInputArea').isVisible(), false);
     assert.equal(await page.locator('#btnDrawMode').getAttribute('data-i18n'), 'editor.modeIdle');
+
+    await dropFile(page, '#canvas-wrapper', {
+        name: 'editable-project.json',
+        mimeType: 'application/json',
+        content: restoredExportText
+    });
+    assert.ok(await page.locator('#tableBody tr').count() >= 2);
+    assert.equal(await page.locator('#scaleStatus').getAttribute('data-i18n'), null);
+    assert.equal(await page.locator('#projectLon').inputValue(), '117.12');
+
+    const sparseRatioProject = projectJson({
+        buildings: [{
+            name: 'Sparse Ratios',
+            floors: 3,
+            floorHeight: 3,
+            units: 2,
+            unitRatiosPerFloor: [[0.2, 0.8], null, [0.4, 0.6]],
+            isThisCommunity: true,
+            shape: [
+                { x: -5, y: -4 },
+                { x: 5, y: -4 },
+                { x: 5, y: 4 },
+                { x: -5, y: 4 }
+            ]
+        }]
+    });
+    const replaceProjectDialogPromise = page.waitForEvent('dialog');
+    const sparseImportPromise = page.locator('#jsonImportInput').setInputFiles({
+        name: 'sparse-ratios.json',
+        mimeType: 'application/json',
+        buffer: Buffer.from(sparseRatioProject)
+    });
+    const replaceProjectDialog = await replaceProjectDialogPromise;
+    await replaceProjectDialog.accept();
+    await sparseImportPromise;
+    await waitForLoadingCycle(page, '#editorLoadingOverlay');
+    let sparseRatioLines = (await page.locator('.split-config-grid textarea').inputValue()).split('\n');
+    assert.deepEqual(sparseRatioLines, ['0.2, 0.8', '0.5, 0.5', '0.4, 0.6']);
+
+    const sparseFloorInput = page.locator('#tableBody tr.building-row input[type="number"]').first();
+    await sparseFloorInput.fill('4');
+    await sparseFloorInput.dispatchEvent('change');
+    sparseRatioLines = (await page.locator('.split-config-grid textarea').inputValue()).split('\n');
+    assert.deepEqual(sparseRatioLines, ['0.2, 0.8', '0.5, 0.5', '0.4, 0.6', '0.4, 0.6']);
+
+    const sparseDownloadPromise = page.waitForEvent('download');
+    await page.locator('#btnExport').click();
+    const sparseExport = JSON.parse(fs.readFileSync(await (await sparseDownloadPromise).path(), 'utf8'));
+    assert.deepEqual(sparseExport.buildings[0].unitRatiosPerFloor, [
+        [0.2, 0.8],
+        [0.5, 0.5],
+        [0.4, 0.6],
+        [0.4, 0.6]
+    ]);
+
+    const fourUnitProject = projectJson({
+        buildings: [{
+            name: 'Four Units',
+            floors: 1,
+            floorHeight: 3,
+            units: 4,
+            isThisCommunity: true,
+            shape: [
+                { x: -5, y: -4 },
+                { x: 5, y: -4 },
+                { x: 5, y: 4 },
+                { x: -5, y: 4 }
+            ]
+        }]
+    });
+    const fourUnitDialogPromise = page.waitForEvent('dialog');
+    const fourUnitImportPromise = page.locator('#jsonImportInput').setInputFiles({
+        name: 'four-units.json',
+        mimeType: 'application/json',
+        buffer: Buffer.from(fourUnitProject)
+    });
+    const fourUnitDialog = await fourUnitDialogPromise;
+    await fourUnitDialog.accept();
+    await fourUnitImportPromise;
+    await waitForLoadingCycle(page, '#editorLoadingOverlay');
+    await page.locator('.split-config-header .btn-mini').click();
+    const fourUnitRatioInputs = page.locator('#visualSplitInputs input');
+    await fourUnitRatioInputs.first().fill('98');
+    await fourUnitRatioInputs.first().dispatchEvent('change');
+    assert.deepEqual(await page.locator('#visualSplitInputs input').evaluateAll(inputs => inputs.map(input => ({
+        value: input.value,
+        min: input.min,
+        max: input.max,
+        valid: input.checkValidity()
+    }))), [
+        { value: '97.0', min: '1', max: '97', valid: true },
+        { value: '1.0', min: '1', max: '97', valid: true },
+        { value: '1.0', min: '1', max: '97', valid: true },
+        { value: '1.0', min: '1', max: '97', valid: true }
+    ]);
+    await page.locator('#btnSaveSplitEditor').click();
+    const fourUnitDownloadPromise = page.waitForEvent('download');
+    await page.locator('#btnExport').click();
+    const fourUnitExport = JSON.parse(fs.readFileSync(await (await fourUnitDownloadPromise).path(), 'utf8'));
+    assert.deepEqual(fourUnitExport.buildings[0].unitRatiosPerFloor, [[0.97, 0.01, 0.01, 0.01]]);
     assert.deepEqual(errors, []);
     await page.close();
 }
@@ -696,6 +962,16 @@ async function testEditorTouchControls(browser) {
     await page.waitForFunction(() => document.querySelectorAll('#tableBody tr').length >= 2);
     const screenshot = await page.screenshot({ path: '/tmp/sunlight-editor-mobile.png' });
     assert.ok(screenshot.length > 10000);
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.locator('.split-config-header .btn-mini').tap();
+    const modalBox = await page.locator('.editor-modal-dialog').boundingBox();
+    assert.ok(modalBox);
+    assert.ok(modalBox.x >= 0 && modalBox.y >= 0, JSON.stringify(modalBox));
+    assert.ok(modalBox.x + modalBox.width <= 390, JSON.stringify(modalBox));
+    assert.ok(modalBox.y + modalBox.height <= 844, JSON.stringify(modalBox));
+    const modalScreenshot = await page.screenshot({ path: '/tmp/sunlight-editor-mobile-split.png' });
+    assert.ok(modalScreenshot.length > 10000);
+    await page.locator('#btnCancelSplitEditor').tap();
     assert.deepEqual(errors, []);
     await context.close();
 }
@@ -706,9 +982,13 @@ async function testEditorTouchControls(browser) {
     try {
         if (!baseUrl) server = await startStaticServer();
         browser = await chromium.launch({ headless: true });
+        console.log('Running viewer browser tests');
         await testViewer(browser);
+        console.log('Running offline worker browser tests');
         await testFileWorker(browser);
+        console.log('Running editor browser tests');
         await testEditor(browser);
+        console.log('Running editor touch browser tests');
         await testEditorTouchControls(browser);
         console.log('Browser smoke tests passed');
     } finally {

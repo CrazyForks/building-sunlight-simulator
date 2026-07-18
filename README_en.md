@@ -50,11 +50,11 @@ It lets users draw building outlines over a JPG/PNG plan, generate a 3D scene, a
 | Module | Description |
 |--------|-------------|
 | **Deployment** | Pure static HTML/CSS/JS. Download and run, no environment installation required. |
-| **Editor** | Converts 2D plans to 3D models. Supports outline drawing, floor height settings, and scale calibration. |
+| **Editor** | Converts 2D plans to 3D models with JSON/image drag-and-drop, building selection and movement, edit undo, and visual apartment splits. |
 | **Calculation** | Uses spherical trigonometry for solar paths. Built-in coordinates and IANA time zones for 50+ major cities. |
 | **Visuals** | High-precision 4096px shadow maps. Hemisphere-aware solstice/equinox labels and custom dates with local-civil-time adjustment (06:00-18:00). Professional compass for orientation. |
-| **Quantification** | Estimates cumulative sunlight per apartment with a heatmap, apartment details, and a configurable reference duration. |
-| **Interaction** | Supports PC mouse and mobile touch controls. Features filtering for non-target buildings. |
+| **Quantification** | Estimates cumulative sunlight per apartment with a heatmap, apartment details, configurable reference duration, and reusable analysis results. |
+| **Interaction** | Supports desktop and mobile controls plus file drag-and-drop. Filtering non-target buildings preserves the current camera view. |
 | **Multi-language** | Supports Chinese/English switching. Language toggle available in the top-right corner. |
 
 ### 📊 Quantified Sunlight Analysis
@@ -95,10 +95,10 @@ Flow: **Plan Configuration (Editor)** ➜ **Export JSON** ➜ **Sunlight Analysi
 ### Step 1: Create Data (editor.html)
 Open `editor.html` to convert your 2D floor plan into the JSON data required for 3D simulation.
 
-1.  **Upload Map**: Upload a JPG/PNG image of the site plan or floor plan.
+1.  **Import a Project**: Click or drop a JPG/PNG plan to start a project, or import a previously exported JSON file to continue editing.
 2.  **Calibrate Scale**: Pick two points on the map with a known distance (e.g., a scale bar) and input the actual distance in meters.
-3.  **Draw Buildings**: Left-click to plot points, then use Finish Outline or double-click to close the shape. Undo Point works with both mouse and touch input.
-4.  **Set Properties**: Select a building to set the number of floors, floor height, and geographical location.
+3.  **Draw and Adjust Buildings**: Left-click to plot points, then use Finish Outline or double-click to close the shape. Outside drawing mode, select and drag buildings; Undo Edit restores create, move, delete, and property changes.
+4.  **Set Properties**: Configure floors, floor height, units per floor, and location. Use Visual Editor to adjust the split axis and apartment width ratios per floor or across all floors. Imported floor-specific unit counts are preserved; adding or removing floors extends ratios from the last floor or trims extra rows. Visual editing keeps every unit at 1% or more and dynamically caps the maximum ratio.
 5.  **Export Config**: Click save to generate the configuration file (defaults to `data.json`).
 
 <details>
@@ -118,10 +118,11 @@ Open `editor.html` to convert your 2D floor plan into the JSON data required for
 ### Step 2: Simulate (index.html)
 Open `index.html` for 3D visualization and analysis.
 
-1.  **Import Data**: Click the button to load the JSON file exported in Step 1 (or use `examples/sample.json` in the repo for testing).
+1.  **Import Data**: Click the button or drop a JSON file onto the page to load an exported project (or use `examples/sample.json` for testing).
 2.  **Adjust Environment**: Select a preset city or manually enter latitude, longitude, and an IANA time zone; switch dates (Winter/Summer Solstice/Spring Equinox/Autumn Equinox/Custom Date).
 3.  **Observe Shadows**: Drag the time slider to observe sunlight occlusion on the target floors throughout the day. Ground compass indicates orientation.
 4.  **Quantified Analysis**: Set a reference duration, then click "Calculate Sunlight Duration" to view the heatmap and apartment data. Click heatmap tiles to inspect individual units.
+5.  **Reuse Results**: After calculation, export Project and Results. On re-import, the Viewer restores the saved season preset or exact custom date and loads the result when geometry, location, north angle, and sampling parameters still match. Changing only the reference duration reuses the computed hours and rebuilds the statistics.
 
 ---
 
@@ -159,6 +160,8 @@ The project uses JSON to transfer building data. `examples/sample.json` provides
 ```
 
 </details>
+
+Viewer exports may include a `precomputedSunlight` cache and its active analysis date. The application owns this field and validates the project fingerprint, sampling-point fingerprint, algorithm version, analysis parameters, and size limits. Stale or invalid entries are ignored and require recalculation.
 
 ---
 
@@ -198,6 +201,12 @@ building-sunlight-simulator/
 Issues and Pull Requests are welcome!
 
 * **Issues**: [Bug reports & Feature requests](https://github.com/seanwong17/building-sunlight-simulator/issues)
+
+---
+
+## 🙏 Acknowledgements
+
+The evolution of multi-facade sampling, facade heatmaps, unit splitting, and apartment interaction was informed by [@wingkinl](https://github.com/wingkinl)'s MIT-licensed fork of [building-sunlight-simulator](https://github.com/wingkinl/building-sunlight-simulator).
 
 ---
 
