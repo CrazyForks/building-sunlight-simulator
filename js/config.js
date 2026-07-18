@@ -14,7 +14,7 @@ const CONFIG = (function() {
         // 应用信息
         APP: {
             NAME: 'Building Sunlight Simulator',
-            VERSION: '3.1.0',
+            VERSION: '3.2.0',
             AUTHOR: 'seanwong17'
         },
 
@@ -69,7 +69,7 @@ const CONFIG = (function() {
             REFERENCE_TRIANGLES_PER_MESH: 12, // 一个等效简单楼栋的三角形数
             MAIN_THREAD_BATCH_SIZE: 240,// Worker 不可用时每批计算步数
             PRECOMPUTED_SCHEMA_VERSION: 1,
-            PRECOMPUTED_ALGORITHM_VERSION: '3.1.0-1',
+            PRECOMPUTED_ALGORITHM_VERSION: '3.2.0-1',
             MAX_PRECOMPUTED_ENTRIES: 24
         },
 

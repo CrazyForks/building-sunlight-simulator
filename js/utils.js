@@ -592,7 +592,7 @@ const Utils = (function() {
         });
 
         const normalized = {
-            version: data.version ?? '3.1.0',
+            version: data.version ?? '3.2.0',
             latitude,
             longitude,
             timeZone,

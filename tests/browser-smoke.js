@@ -377,7 +377,7 @@ async function testViewer(browser) {
     const precomputedProject = JSON.parse(precomputedProjectText);
     console.log('Viewer: importing precomputed result');
     assert.equal(precomputedProject.precomputedSunlight.schemaVersion, 1);
-    assert.match(precomputedProject.precomputedSunlight.algorithmVersion, /^3\.1\.0-/);
+    assert.match(precomputedProject.precomputedSunlight.algorithmVersion, /^3\.2\.0-/);
     assert.equal(precomputedProject.precomputedSunlight.entries.length, 1);
     const precomputedEntry = precomputedProject.precomputedSunlight.entries[0];
     assert.equal(precomputedEntry.hours.length, precomputedEntry.pointCount);
