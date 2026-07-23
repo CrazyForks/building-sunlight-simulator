@@ -220,12 +220,10 @@ building-sunlight-simulator/
 
 ## 📈 Star History
 
-<a href="https://www.star-history.com/?repos=SeanWong17%2Fbuilding-sunlight-simulator&type=date">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="assets/star-history/star-history-dark.svg">
-    <img alt="Star History Chart" src="assets/star-history/star-history-light.svg">
-  </picture>
-</a>
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/SeanWong17/building-sunlight-simulator/star-history-assets/assets/star-history/star-history-dark.svg">
+  <img alt="Star History Chart" src="https://raw.githubusercontent.com/SeanWong17/building-sunlight-simulator/star-history-assets/assets/star-history/star-history-light.svg">
+</picture>
 
 ---
 
