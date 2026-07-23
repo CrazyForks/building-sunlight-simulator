@@ -220,7 +220,12 @@ building-sunlight-simulator/
 
 ## 📈 Star History
 
-[![Star History Chart](https://api.star-history.com/svg?repos=SeanWong17/building-sunlight-simulator&type=Date)](https://star-history.com/#SeanWong17/building-sunlight-simulator&Date)
+<a href="https://www.star-history.com/?repos=SeanWong17%2Fbuilding-sunlight-simulator&type=date">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/star-history/star-history-dark.svg">
+    <img alt="Star History Chart" src="assets/star-history/star-history-light.svg">
+  </picture>
+</a>
 
 ---
 
